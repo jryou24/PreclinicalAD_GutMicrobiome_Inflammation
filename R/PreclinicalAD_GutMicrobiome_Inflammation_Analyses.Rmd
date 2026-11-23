@@ -1,0 +1,1932 @@
+---
+title: "PreclinAD_Microbiome_Analyses"
+output: html_document
+date: "2026-11-23"
+---
+
+```{r libraries, include=FALSE}
+library(ggplot2)          #4.0.2
+library(ggExtra)          #0.11.0
+library(ggridges)
+library(ggrepel)
+library(dplyr)            #1.2.0
+library(phyloseq)         #1.50.0
+library(vegan)            #2.7.2
+library(Maaslin2)         #1.20.0
+library(ape)              #5.8.1
+library(readxl)           #1.4.5     
+library(microViz)         #0.12.6
+library(ggside)           #0.4.1
+library(patchwork)        #1.2
+library(ComplexHeatmap)   #2.14.0
+library(tidyr)            #1.3.1
+library(readr)            #2.1.5
+library(reshape2)         #1.4.4
+library(rstatix)          #0.7.2
+library(ggpubr)           #0.6.0
+library(NatParksPalettes) #0.2.0
+library(cowplot)          #1.1.2
+library(stringr)          #1.5.1
+library(MTXmodel)         #1.2.4
+library(forcats)          #1.0.0
+library(tidyverse)        #2.0.0  
+library(scales)           #1.3.0
+library(microbiome)
+library(lme4)             #1.1.38
+library(lmerTest)         #3.2.0
+library(lmtest)
+library(broom)
+library(MuMIn)
+library(car)
+library(emmeans)          #2.0.1
+library(igraph)           #2.2.2
+library(FSA)
+library(rcompanion)
+## Data Processing Functions 
+source("Functions/phyloseq_object.R")
+source("Functions/data_parsing.R")
+source("Functions/Correlation_analyses.R")
+source("Functions/GLM_functions.R")
+#source("main/HighstatLib.r")
+
+##Analysis and Plotting Functions 
+source("Functions/oordinate_wrapper.R")
+source("Functions/ordinate_metaphlan.R")
+source("Functions/plot_maaslin_MTX_DE.R")
+source("Functions/compare_longitudinal_beta_diversity.R")
+source("Functions/Statistical_tests.R")
+source("Functions/secom.R")
+source("Functions/rf_boruta.R")
+source("Functions/customtab.R")
+cur.date <- format(Sys.Date(), "%y%m%d")
+output_path <- (paste0("outputs/", cur.date, "/", cur.date))
+output_path2 <- (paste0("outputs/", cur.date, "/"))
+
+
+cat_var <- c('Sample_ID','ID','Time_point','Sample_time','Sex','Race',"CDR",'AD_Status', 'Amyloid_positivity', 'Tau_positivity','Tracer_used_for_classification','Tau_marker','amyloid_tau_status','Tracer.mrfree','Tracer.fsuvr','Tracer.av45','Tracer.tau','apoe_genotype','apoe4_carriage','Diabetes_binary',	'Hypertension_binary','Diabetes',	'Hypertension')
+
+
+num_var <- c("Years_Education","Age","Days_since_CDR",'Days_since_biomarker_assessment',"combined.centiloid","MRFreePET_Centiloid","Days_sinceMrFreePETpib","pib_fsuvr_rsf_tot_cortmean","Centiloid_PiB_fSUVR_rsf_TOT_CORT","Days_sincePETpib","av45_fsuvr_rsf_tot_cortmean","Centiloid_AV45_fSUVR_rsf_TOT_COR","Days_sincePETav45","LUMIPULSE_CSF_AB42","LUMIPULSE_CSF_AB40","LUMIPULSE_CSF_tTau","LUMIPULSE_CSF_pTau","CSF_ab42_ab40_ratio","Days_sinceCSF","Tauopathy","Days_sincePETtau","mr_vol_tot_wmhypointensities","LOAD_CorticalSignature_Thickness","mr_vol_r_hippocampus","mr_vol_l_hippocampus","mr_vol_tot_intracranial","hippocampus_vol_div_icv",	"Days_sinceMRI","NGAL_ug_ml","Calp_ug_ml",	"log2_NGAL","log2_Calp","WEIGHT","HEIGHT","BMI","Calories_kcal",	'Calories_from_fat_kcal',	'Calories_from_SatFat_kcal',	'Protein_g',	'Carbohydrates_g',	'Total_dietary_fiber_g',	'Total_soluble_fiber_g',	'Dietary_fiber_US_2016_g',	'Soluble_fiber_US_2016',	'Total_sugars_g',	'Added_sugar_g','Monosaccharides_g', "LPS_EIA_units", "CRP_ug_mL")
+
+
+# Custom colors for plotting
+custom_colors_hp <- c("Healthy" = "#49b9a5", "Preclinical" = "#eebe61")
+custom_colors_AD <- c("Healthy" = "#49b9a5", "Preclinical" = "#eebe61", "Symptomatic" = "#a98ec2")
+custom_colors_hp_long <- c("Healthy" = "#49b9a5", "Healthy_follow-up" = "#a7d9c1", "Preclinical" = "#eebe61",
+                           "Preclinical_follow-up" = "#e9d8b5")
+custom_colors_at_status <- c("Healthy A-/T-"="#49b9a5", "Preclinical A+/T-" = "#eebe61", "Preclinical A+/T+" = "#b08d25", "Healthy A-/T+" =  "#237a80")
+
+```
+
+
+Define paths to data files
+```{r}
+
+meta_data_path <- "~/Documents/GitHub/PreclinicalAD_GutMicrobiome_Inflammation/R/Data/Supplementary_table1_metadata.xlsx"
+
+metaphlan_path <- "~/Documents/GitHub/PreclinicalAD_GutMicrobiome-Inflammation/R/Data/PreclinicalAD_metaphlan4_n375_merged.txt"
+
+```
+
+Create phyloseq object
+```{r}
+abund_threshold=.1 
+
+
+#mphlan <- data.frame(combined)
+mphlan <- data.frame(read.table(metaphlan_path, header = T, sep="\t", skip=1))
+print("Done reading metaphlan table")
+
+
+metadata <- data.frame(read_excel(meta_data_path))
+# Convert character coded "NA" to actual NA
+metadata <- metadata %>%
+  mutate(across(where(is.character), ~ na_if(., "NA")))
+
+print("Done reading metadata table")
+
+### Processing for phyloseq takes 3 steps 1) species data 2) taxa table 3) metadata
+#1) Species Data 
+rownames(mphlan)<-mphlan$clade_name
+mphlan$clade_name<- NULL
+# keep rows with species info
+mphlan.species <- mphlan[grepl('s__', rownames(mphlan)), ]
+# Drop rows with SGB (species level genome bins)
+mphlan.species <- mphlan.species[!grepl('t__', rownames(mphlan.species)), ]
+
+mphlan.species <- as.matrix(mphlan.species)
+  
+
+print(dim(mphlan.species))
+#2) Taxa table 
+# Create phyloseq taxa table
+print("Making taxa table")
+
+species <- data.frame(Names = rownames(mphlan.species))
+species <- data.frame(do.call('rbind', strsplit(as.character(species$Names),'|', fixed=TRUE)))
+rownames(species) <- rownames(mphlan.species )
+colnames(species) <- c('Domain', 'Phylum', 'Class', 'Order', 'Family', 'Genus', 'Species')
+print(dim(species))
+species <- as.matrix(species)
+#3) Metadata 
+# Filter out samples not found in the metaphlan results and adjust factors
+rows_metadata <- rownames(metadata)[(metadata$Sample_ID %in% colnames(mphlan.species))]
+metadata <- metadata[rownames(metadata) %in% rows_metadata, ]
+metadata <- data.frame(metadata)
+rownames(metadata) <- metadata$Sample_ID 
+# Set categorical variables to factor
+metadata[,cat_var] <- lapply(metadata[,cat_var], factor)
+# Set numerical variables to numeric
+metadata[,num_var] <- lapply(metadata[,num_var], as.numeric)
+print(dim(metadata))
+
+print("Differences between metadata rows and metaphlan column names")
+print(setdiff(colnames(mphlan.species), rownames(metadata)))
+
+ps <- phyloseq(otu_table(mphlan.species, taxa_are_rows = TRUE), #2083 taxa and 375 samples
+               sample_data(metadata),
+               tax_table(species)) 
+#ps.filt <- prune_taxa(taxa_sums(ps)>.01, ps) #1837 taxa and 375 samples
+ps.filt <- filter_taxa(ps, function(x) mean(x) > abund_threshold, TRUE) #177 taxa and 375 samples
+ps.filt <- transform_sample_counts(ps.filt, function(x) (x / sum(x))*100)
+
+
+```
+
+
+```{r}
+
+## Create phyloseq object
+ps_MTG <- ps.filt
+
+mtg_meta <- data.frame(phyloseq::sample_data(ps_MTG))
+meta <- read_excel(meta_data_path)
+
+missing_samples <- meta[!meta$Sample_ID %in% mtg_meta$Sample_ID, ]
+
+# Subset phyloseq object to the samples closest to the AD biomarker measure 
+## N=198
+ps_mtg_single_tp <- phyloseq::subset_samples(ps_MTG, Sample_time == "closest")
+ps_mtg_single_tp_meta <- data.frame(phyloseq::sample_data(ps_mtg_single_tp))
+
+```
+
+Create Table 1 
+```{r}
+library(kableExtra)
+library("anytime") 
+library(tibble) # for rownames_to_column() function
+library(stringr) # for str_squish()
+library(flextable)
+library(officer)
+library(forcats)
+library(tableone)
+library(webshot2)
+
+source("~/Documents/GitHub/AD_longitudinal/datasets/Metadata/customtab.R")
+
+meta_closest <- ps_mtg_single_tp_meta
+# Set categorical variables as factors 
+categorical_vars <- c('Sex','Race','apoe4_carriage','Diabetes','Hypertension','Tau_positivity')
+
+meta_closest[,categorical_vars] <- lapply(meta_closest[,categorical_vars], factor)
+
+numerical_vars <- c('Age','Years_Education','BMI',"combined.centiloid",'Days_since_biomarker_assessment','Calories_kcal','Calories_from_fat_kcal', 'Calories_from_SatFat_kcal','Protein_g','Carbohydrates_g','Total_dietary_fiber_g','Total_soluble_fiber_g','Total_sugars_g','Added_sugar_g','Monosaccharides_g')
+
+meta_closest[,numerical_vars] <- lapply(meta_closest[,numerical_vars], as.numeric)
+
+# Generate metadata comparison table 
+comp_vars <- c('Sex','Age','Years_Education','Race','BMI','apoe4_carriage','Diabetes','Hypertension',"combined.centiloid",'Tau_positivity','Days_since_biomarker_assessment','Calories_kcal','Calories_from_fat_kcal', 'Calories_from_SatFat_kcal','Protein_g','Carbohydrates_g','Total_dietary_fiber_g','Total_soluble_fiber_g','Total_sugars_g','Added_sugar_g','Monosaccharides_g')
+
+
+tab_hp_closest <- CreateTableOne(vars=comp_vars,
+                           strata='AD_Status', 
+                           data=meta_closest)
+tab_plot_hp_closest <- print(tab_hp_closest, 
+                        showAllLevels = TRUE,
+                        quote = F,
+                        noSpaces = T,
+                        test = T,
+                        contDigits = 1,
+                        printToggle = F,
+                        dropEqual = T,
+                        explain = T)
+
+# Convert to dataframe
+tab_hp_closest_df <- as.data.frame(tab_plot_hp_closest) %>% rownames_to_column(var = "Variable")
+
+# Set Table header
+header <- str_squish(str_remove("Table 1. Participant demographics at the time the stool sample closest to AD biomarker assessment date was collected, stratified by AD status", "\n"))
+# Set Table footer
+footer <- str_squish(str_remove("Numbers are either No. or mean values", "\n"))
+# Set custom_tab() defaults
+customtab_defaults()
+# Create the flextable object
+flextable_processed_samples <- custom_tab(tab_hp_closest_df, header, footer)
+
+# Save as word .docx
+save_as_docx(flextable_processed_samples, path = "Table1.docx",
+pr_section = prop_section(page_size = page_size(orient = "landscape"), type = "continuous"))
+```
+
+
+Figure 1: PCoA analysis
+```{r}
+# PCoA and permanova using single timepoint samples from healthy and preclinical samples closest to biomarker assessment date 
+mtg_single_tp_hp_meta <- data.frame(phyloseq::sample_data(ps_mtg_single_tp))
+ps.ordination <- phyloseq::ordinate(ps_mtg_single_tp, method='PCoA', distance='bray')
+ps.ordination_long <- phyloseq::ordinate(ps_MTG, method='PCoA', distance='bray')
+
+coordinates <- data.frame(ps.ordination$vectors)
+
+df <- data.frame(Coord1 = coordinates$Axis.1,
+                 Coord2 = coordinates$Axis.2,
+                 Age = mtg_single_tp_hp_meta[, "Age"],
+                 Sex = mtg_single_tp_hp_meta[, "Sex"],
+                 BMI = mtg_single_tp_hp_meta[, "BMI"],
+                 Copies_of_APOE4_allele = mtg_single_tp_hp_meta[, "apoe4_carriage"],
+                 Diabetes = mtg_single_tp_hp_meta[, "Diabetes"],
+                 Hypertension = mtg_single_tp_hp_meta[, "Hypertension"],
+                 Days_since_biomarker_assessment = mtg_single_tp_hp_meta[, "Days_since_biomarker_assessment"],
+                 Group = mtg_single_tp_hp_meta[, "AD_Status"])
+df <- df %>%
+  filter(!is.na(Copies_of_APOE4_allele))
+
+axis1.model <- lm(Coord1 ~ Age + Sex + BMI + Copies_of_APOE4_allele + Diabetes + Hypertension + Group, data=df)
+axis1_summary <- tidy(axis1.model)
+write.csv(axis1_summary, "260818_outputs/260818_PCoA1_hp_LM_results.csv", row.names = T)
+
+# Type III ANOVA to assess the effect of AD_Status on PCoA1 scores while adjusting for covariates
+## The effect of AD_Status was marginally significant (F=4.11, p=0.044), indicating that amyloid positivity explained a significant portion of the variation in taxonomic composition along PCoA axis 1. 
+axis1_result <- car::Anova(axis1.model, type = 3) 
+write.csv(axis1_result, "260818_outputs/260818_PCoA1_hp_typeIII_ANOVA_results.csv", row.names = T)
+
+axis2.model <- lm(Coord2 ~ Age + Sex + BMI + Copies_of_APOE4_allele + Diabetes + Hypertension + Group, data=df)
+summary(axis2.model)
+axis2_summary <- tidy(axis2.model)
+write.csv(axis2_summary, "260818_outputs/260818_PCoA2_hp_LM_results.csv", row.names = T)
+
+axis2_result <- car::Anova(axis2.model, type = 3) 
+write.csv(axis2_result, "260818_outputs/260818_PCoA2_hp_typeIII_ANOVA_results.csv", row.names = T)
+
+### Plot PCoA
+ordination.plot <- phyloseq::plot_ordination(ps_mtg_single_tp, ps.ordination,
+                                             type="samples", color="AD_Status") +
+  geom_point(size=1, shape=19) +
+  stat_ellipse() +
+  scale_color_manual(values=custom_colors_hp, name = "AD Status") + 
+  theme_classic() +
+  theme(
+    axis.text.y = element_text(size=14),
+    axis.text.x = element_text(size=14),
+    axis.title.x = element_text(size=14),
+    axis.title.y = element_text(size=14),
+    legend.title = element_text(size=14),
+    legend.text = element_text(size=14),
+    legend.position = "left",
+    plot.title = element_text(size=15),
+    panel.border = element_rect(fill = NA, colour = "black", size = 3)
+  )
+# Add ggmarginal 
+ordination.plot <- ggMarginal(ordination.plot, type = 'boxplot', groupFill = TRUE, size = 10)
+ggsave("260818_outputs/260818_PCoA_bray_abund_threshold_0_1.pdf", plot = ordination.plot, bg = "transparent", width = 7, height = 5)
+
+# Add the Unifrac PCoA 1 and 2 axes to the phyloseq object metadata
+sample_data(ps_mtg_single_tp)$Tax.PCoA1 <- ps.ordination$vectors[,1]
+sample_data(ps_mtg_single_tp)$Tax.PCoA2 <- ps.ordination$vectors[,2]
+
+# PERMANOVA with all significantly different variables based on Table 1
+## N = 197 (drops 1 sample without APOE data)
+perm_mtg_single_tp_hp <- permanova_wrapper(ps_mtg_single_tp, values=c("Healthy","Preclinical"), dist = "bray", var = "AD_Status", adonis_values = c("Age","Sex","BMI","apoe4_carriage","Diabetes","Hypertension","AD_Status"), ss_method = "margin") #p-value = 0.032
+write.csv(perm_mtg_single_tp_hp@permanova, "260818_single_tp_permanova_results.csv", row.names = T)
+
+```
+
+Figure 1: MaAslin2
+```{r}
+######### Run MaAslin2 and create Fig. 1C ############
+ps_mtg_single_tp_filt <- ps_mtg_single_tp
+
+#maaslin_wrapper(ps_MTG, random_effects_vector=c("ID"), reference_vector = c("AD_Status,Healthy", "apoe4_carriage,0", "Sex,M", "Diabetes,0", "Hypertension,0"), fixed_effects_vector = c("Age","Sex","BMI","apoe4_carriage","Diabetes","Hypertension","AD_Status"), anal_method = "LM", core = 8, transf_method="None", norm_method="CLR")
+
+maaslin_wrapper(ps_mtg_single_tp_filt, random_effects_vector=c(), reference_vector = c("AD_Status,Healthy", "apoe4_carriage,0", "Sex,M", "Diabetes,0", "Hypertension,0"), fixed_effects_vector = c("Age","Sex","BMI","apoe4_carriage","Diabetes","Hypertension","AD_Status"),
+                abun = 0, prev = 0.1, anal_method = "NEGBIN", core = 8)
+
+num_samples <- length(ps_mtg_single_tp_filt@sam_data$Sample_ID)
+sample_cutoff <- num_samples*.15
+
+
+maaslin_output <- "outputs/261005/261005_maaslin/ps_mtg_single_tp_filt/significant_results.tsv"
+  
+maaslin_df <- read_tsv(maaslin_output) %>% filter(metadata=="AD_Status") %>% mutate(abs_coef=abs(coef)) %>% mutate(qval = p.adjust(pval, method = 'BH')) %>% filter(N.not.0>sample_cutoff) %>% mutate(feature=gsub(".*s__", "", feature)) %>% mutate(value=as.factor(value)) %>% arrange(desc(coef))
+
+
+median <- median(maaslin_df$abs_coef)
+maaslin_plot_subset <- subset(maaslin_df, N.not.0 > sample_cutoff & abs(coef) > median)
+maaslin_plot_subset <- maaslin_plot_subset %>% arrange(desc(coef))
+#obtain min and max coefficient values (needed for plotting later)
+min <- min(maaslin_plot_subset$coef)
+max <- max(maaslin_plot_subset$coef)
+
+### Generate coefficient plot ####
+# Calculate 95% CI for coefficients
+maaslin_plot_subset <- maaslin_plot_subset %>% mutate(species = fct_reorder(feature, coef))
+
+maaslin_plot_subset$coefmax <- maaslin_plot_subset$coef + maaslin_plot_subset$stderr
+maaslin_plot_subset$coefmin <- maaslin_plot_subset$coef - maaslin_plot_subset$stderr
+
+maaslin_plot_subset$CI95upper <- maaslin_plot_subset$coef + 1.96*maaslin_plot_subset$stderr
+maaslin_plot_subset$CI95lower <- maaslin_plot_subset$coef - 1.96*maaslin_plot_subset$stderr
+write.csv(maaslin_plot_subset, "260818_outputs/260915_Fig1C_coeff_values.csv", row.names = F)
+
+# Plot coefficients
+x_min_lim <- (floor(min / 5) * 6) 
+x_max_lim <- (ceiling(max / 5) * 6) 
+colors_list <- c("#eebe61","#49b9a5")
+
+coeff_p <- ggplot(maaslin_plot_subset, aes(x=coef, y=species, color=as.factor(coef<0)))+
+  geom_point(size = 3)+
+  geom_errorbar(aes(xmax = CI95upper, xmin = CI95lower), orientation = "y")+
+  geom_vline(xintercept = 0, linetype='dotted', color='grey', linewidth=1.5)+
+  scale_color_manual(values=colors_list)+
+  theme_linedraw()+
+  theme(axis.text.y = element_text(size=18),
+        axis.text.x = element_text(size=18),
+        axis.title.x = element_text(size=17),
+        axis.title.y = element_blank(),
+        legend.text = element_text(size = 16),
+        legend.position = "bottom",
+        plot.title = element_text(size=15),
+        panel.border = element_rect(fill=NA, colour="black", linewidth=1))+
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 10)) +
+  xlab('Coefficient')
+ggsave("261005_Fig1C_coeff.pdf", plot = coeff_p, bg = "transparent", width = 11, height = 14)
+
+#### Generate prevalence plot ###
+### Access species abundance data 
+abund <- psmelt(ps_mtg_single_tp_filt)
+
+abund <- abund %>% mutate(OTU=gsub(".*s__", "", OTU))
+diff_feat_abund <- subset(abund, OTU %in% maaslin_plot_subset$feature)
+
+# Re-order feature abs abundances according to coefficient value
+# This order is preserved in filename, which was previously ordered: 
+order <- data.frame(OTU = unique(maaslin_plot_subset$feature))
+# sort = F makes sure that the order is based on order_index df which is ordered by coefficient value
+abund.df <- merge(order, diff_feat_abund, by="OTU", sort = F)
+abund.df$OTU <- as.factor(abund.df$OTU)
+abund.df <- abund.df %>% mutate(OTU = fct_relevel(OTU, maaslin_plot_subset$feature))
+
+# For each significant feature in each sample, set AbunNotZero == 1 if its 
+# abundance is greater than 0. 
+abund.df$AbunNotZero <- 1*(abund.df$Abundance > 0)
+
+# Summarize pathway prevalence by variable of interest
+abund.df.n0 <- abund.df %>% 
+  group_by(OTU, AD_Status) %>%
+  summarise(N = n(), SumNotZero = sum(AbunNotZero)) %>%
+  mutate(PercentNotZero = 100*(SumNotZero / N)) %>%
+  ungroup()
+write.csv(abund.df.n0, "261005_maaslin2_species_prevalence.csv", 
+          row.names = F)
+
+prev_p <- ggplot(abund.df.n0, aes(x = AD_Status, y=OTU, fill=PercentNotZero))+
+  geom_tile()+
+  scale_fill_distiller(palette ='RdBu', type='seq', breaks = c(0,50,100), 'Prevalence (%)')+
+  theme_classic()+
+  theme(axis.text.y = element_blank(),
+        axis.text.x = element_text(size=18, angle=45, hjust=1),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        plot.title = element_text(size=17),
+        legend.text = element_text(size = 18),
+        panel.border = element_rect(fill=NA, colour="black", size=1))+
+  scale_y_discrete(limits=rev)
+ggsave("261005_Fig1C_prev.pdf", plot = prev_p, bg = "transparent", width = 11, height = 12)
+
+combined_maaslin_p <- coeff_p | prev_p 
+ggsave("261005_Fig1B_MaAslin2_taxa_plot.pdf", plot = combined_maaslin_p, bg = "transparent", width = 16, height = 15)
+
+
+###### Comparing output with Ferreiro et al. 2023 ########
+af_results <- read_excel("~/Documents/GitHub/PreclinicalAD_GutMicrobiome_Inflammation/R/Data/Ferreiro_etal_MaAslin2_species_Amyloid_positive_results.xlsx")
+
+af_results2 <- af_results %>% select(feature, coef) %>% dplyr::rename(af_coef = coef) %>% mutate(feature=gsub(".*s__", "", feature))
+
+## Read in our study's significant taxa with a 15% prevalence filter
+maaslin_df2 <- read_tsv(maaslin_output) %>% filter(metadata=="AD_Status") %>% mutate(abs_coef=abs(coef)) %>% mutate(qval = p.adjust(pval, method = 'BH')) %>% mutate(feature=gsub(".*s__", "", feature)) %>% mutate(value=as.factor(value)) %>% arrange(desc(coef))
+
+common_results <- merge(maaslin_df2, af_results2, by = "feature", all.x = T) %>% arrange(desc(coef)) %>%
+  mutate(consistent = case_when(is.na(coef) | is.na(af_coef) ~ NA_character_,
+                                coef > 0 & af_coef > 0 ~ "true_pos",
+                                coef < 0 & af_coef < 0 ~ "true_neg",
+                                TRUE ~ "false"))
+consistent_prop <- common_results %>% count(consistent) %>% mutate(proportion = n / sum(n))
+
+####### Prepare supplementary table 4 #######
+maaslin_df_all <- read_tsv(maaslin_output) %>% mutate(abs_coef=abs(coef)) %>% mutate(qval = p.adjust(pval, method = 'BH')) %>% mutate(feature=gsub(".*s__", "", feature)) %>% mutate(value=as.factor(value)) %>% arrange(metadata, desc(coef))
+
+## Add a column that indicates whether the taxa was identified in Ferreiro et al. 2023
+maaslin_df_all <- maaslin_df_all %>% mutate(Identified_in_Ferreiro_et_al = ifelse(metadata == "AD_Status", ifelse(is.na(common_results$consistent), FALSE, TRUE), NA_character_))
+write.csv(maaslin_df_all, "261005_MaAslin2_taxa_Supplementary_Table4.csv", row.names = F)
+```
+
+Extended Figure 1
+```{r}
+#### Compare alpha diversity between groups ###
+alpha_div_mtg_single_tp <- alpha_div_wrapper_adjust_var(ps_mtg_single_tp, 
+                                                        values=c("Healthy", "Preclinical"),
+                                                        color_vector = custom_colors_hp,
+                                                        save_adiv_plot = TRUE)
+sample_data(ps_mtg_single_tp)$Tax_Richness <- alpha_div_mtg_single_tp$Richness
+sample_data(ps_mtg_single_tp)$Tax_Shannon <- alpha_div_mtg_single_tp$Shannon
+sample_data(ps_mtg_single_tp)$Tax_Simpson <- alpha_div_mtg_single_tp$Simpson
+```
+
+
+Figure 2 and Extended Data Fig. 3: Stool Inflammatory markers
+```{r}
+ps_mtg_single_tp_meta <- sample_data(ps_mtg_single_tp)
+
+ps_mtg_single_tp_meta$apoe4_carriage <- relevel(factor(ps_mtg_single_tp_meta$apoe4_carriage), ref = "0")
+ps_mtg_single_tp_meta$Diabetes <- relevel(factor(ps_mtg_single_tp_meta$Diabetes), ref = "0")
+ps_mtg_single_tp_meta$Hypertension <- relevel(factor(ps_mtg_single_tp_meta$Hypertension), ref = "0")
+ps_mtg_single_tp_meta$AD_Status <- relevel(factor(ps_mtg_single_tp_meta$AD_Status), ref = "Healthy")
+ps_mtg_single_tp_meta$amyloid_tau_status <- relevel(factor(ps_mtg_single_tp_meta$amyloid_tau_status), ref = "Healthy A-/T-")
+
+df_single_tp_hp_ngal <- ps_mtg_single_tp_meta %>%
+  select(c(Sample_ID, ID, log2_NGAL, Age, Sex, BMI, apoe4_carriage, Diabetes, Hypertension, AD_Status, combined.centiloid)) %>%
+  filter(complete.cases(.)) # Eliminating rows with NAs 
+
+NGAL_sample_sizes_ad_status <- df_single_tp_hp_ngal %>%
+  filter(!is.na(log2_NGAL)) %>%
+  group_by(AD_Status) %>%
+  summarise(n = n(), .groups = 'drop')  # Create a summary with sample sizes
+
+options(na.action='na.fail')
+ngal.model <- lm(log2_NGAL ~ Age + Sex + BMI + apoe4_carriage + Diabetes + Hypertension + AD_Status, data = df_single_tp_hp_ngal)
+summary(ngal.model)
+ngal_model_summary <- tidy(ngal.model)
+write.csv(ngal_model_summary, "261018_log2_NGAL_singletp_lm_summary_hp.csv", row.names = F)
+
+#### Adjusted EMMs
+ngal_emm <- pairs(emmeans(ngal.model, ~ AD_Status), adjust = "BH")
+summary(ngal_emm)
+
+ngal_ad_comp <- as.data.frame(ngal_emm)
+write.csv(ngal_ad_comp, "261018_NGAL_AD_LMM_emmeans_results.csv", row.names = F)
+ngal_ad_sig <- ngal_ad_comp %>%
+  filter(p.value < 0.05) %>%
+  mutate(
+    label = paste0("q = ", signif(p.value, 2)),
+    group1 = gsub("[()]", "", gsub(" -.*", "", contrast)),
+    group2 = gsub("[()]", "", gsub(".*- ", "", contrast)))
+
+### LMM BH-corrected p-values
+p_NGAL_hp <- ggplot(df_single_tp_hp_ngal, aes(x = AD_Status, y = log2_NGAL, fill = AD_Status)) +
+  geom_boxplot(outlier.shape = NA) +  # Avoids plotting outliers as points since we'll overlay scatter
+  geom_jitter(aes(color = AD_Status),shape = 21, color = "black", width = 0.2, size = 2, stroke = 0.4, alpha = 0.6) +
+  scale_y_continuous(expand = expansion(mult = c(0.1, 0.1))) +  # Adds padding at the bottom
+  scale_fill_manual(values = custom_colors_hp) +  
+  scale_color_manual(values = custom_colors_hp) +
+  labs(x = "AD Status",
+       y = "Log2 Stool NGAL (ug/mL)",
+       fill = "AD Status") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 50, hjust = 1, size = 16),
+        axis.text.y = element_text(size = 16),
+        axis.title.x = element_text(size = 18),
+        axis.title.y = element_text(size = 18),
+        legend.title = element_text(size = 16),
+        legend.position = "none",
+        plot.margin = margin(t = 10, r = 10, b = 50, l = 10)) +  # Increase bottom margin
+  coord_cartesian(clip = "off")   # Prevents clipping of points at the bottom
+
+y_positions <- df_single_tp_hp_ngal %>%
+  group_by(AD_Status) %>%
+  summarise(y_max = max(log2_NGAL, na.rm = TRUE)) %>%
+  deframe()
+
+step_height <- 0.5
+for(i in seq_len(nrow(ngal_ad_sig))) {
+  g1 <- ngal_ad_sig$group1[i]
+  g2 <- ngal_ad_sig$group2[i]
+  label <- ngal_ad_sig$label[i]
+  
+  # x-axis positions
+  x1 <- which(levels(df_single_tp_hp_ngal$AD_Status) == g1)
+  x2 <- which(levels(df_single_tp_hp_ngal$AD_Status) == g2)
+  
+  # y-axis position: a bit above boxplots
+  y <- max(y_positions[c(g1,g2)], na.rm = TRUE) + step_height * i
+  
+  p_NGAL_hp <- p_NGAL_hp + 
+    annotate("segment", x = x1, xend = x2, y = y, yend = y) +
+    annotate("text", x = mean(c(x1, x2)), y = y + 0.1, label = label, size = 4.5)
+}
+ggsave("261018_NGAL_LMM_pvalues_AD_Status_HP.pdf", plot = p_NGAL_hp, bg = "transparent", width = 10, height = 8) 
+
+############# Calprotectin ###########
+single_tp_hp_calp <- ps_mtg_single_tp_meta %>%
+  select(c(Sample_ID, ID, log2_Calp, Age, Sex, BMI, apoe4_carriage, Diabetes, Hypertension, AD_Status, combined.centiloid)) %>%
+  filter(complete.cases(.)) # Eliminating rows with NAs 
+
+options(na.action='na.fail')
+calp.model <- lm(log2_Calp ~ Age + Sex + BMI + apoe4_carriage + Diabetes + Hypertension + AD_Status, data = single_tp_hp_calp)
+summary(calp.model)
+
+calp_model_summary <- tidy(calp.model)
+#calp_model_summary$q.value <- p.adjust(calp_model_summary$p.value, method = "BH")
+write.csv(calp_model_summary, "261018_log2_Calprotectin_singletp_lm_summary.csv", row.names = F)
+
+#### Adjusted EMMs
+calp_emm <- pairs(emmeans(calp.model, ~ AD_Status), adjust = "none")
+summary(calp_emm)
+calp_ad_comp <- as.data.frame(calp_emm)
+write.csv(calp_ad_comp, "261018_Calp_AD_LMM_emmeans_results.csv", row.names = F)
+
+calp_ad_sig <- calp_ad_comp %>%
+  filter(p.value < 0.05) %>%
+  mutate(
+    label = paste0("q = ", signif(p.value, 2)),
+    group1 = gsub("[()]", "", gsub(" -.*", "", contrast)),
+    group2 = gsub("[()]", "", gsub(".*- ", "", contrast)))
+
+p_Calp_hp <- ggplot(single_tp_hp_calp, aes(x = AD_Status, y = log2_Calp, fill = AD_Status)) +
+  geom_boxplot(outlier.shape = NA) +  # Avoids plotting outliers as points since we'll overlay scatter
+  geom_jitter(aes(color = AD_Status),shape = 21, color = "black", width = 0.2, size = 2, stroke = 0.4, alpha = 0.6) +
+  scale_y_continuous(expand = expansion(mult = c(0.1, 0.1))) +  # Adds padding at the bottom
+  scale_fill_manual(values = custom_colors_hp) +  
+  scale_color_manual(values = custom_colors_hp) +
+  labs(x = "AD Status",
+       y = "Log2 Stool Calprotectin (ug/mL)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 50, hjust = 1, size = 16),
+        axis.text.y = element_text(size = 16),
+        axis.title.x = element_text(size = 18),
+        axis.title.y = element_text(size = 18),
+        legend.title = element_text(size = 16),
+        legend.position = "none",
+        plot.margin = margin(t = 10, r = 10, b = 50, l = 10)) +  # Increase bottom margin
+  coord_cartesian(clip = "off") 
+
+y_positions <- single_tp_hp_calp %>%
+  group_by(AD_Status) %>%
+  summarise(y_max = max(log2_Calp, na.rm = TRUE)) %>%
+  deframe()
+
+step_height <- 0.5
+for(i in seq_len(nrow(calp_ad_sig))) {
+  g1 <- calp_ad_sig$group1[i]
+  g2 <- calp_ad_sig$group2[i]
+  label <- calp_ad_sig$label[i]
+  
+  # x-axis positions
+  x1 <- which(levels(single_tp_hp_calp$AD_Status) == g1)
+  x2 <- which(levels(single_tp_hp_calp$AD_Status) == g2)
+  
+  # y-axis position: a bit above boxplots
+  y <- max(y_positions[c(g1,g2)], na.rm = TRUE) + step_height * i
+  
+  p_Calp_hp <- p_Calp_hp + 
+    annotate("segment", x = x1, xend = x2, y = y, yend = y) +
+    annotate("text", x = mean(c(x1, x2)), y = y + 0.25, label = label, size = 4.5)
+}
+ggsave("261018_Calp_LMM_pvalues_AD_Status_HP.pdf", plot = p_Calp_hp, bg = "transparent", width = 10, height = 8) 
+
+### Combined NGAL + Calprotectin plot
+combined_inflamm_plot_hor <- p_NGAL_hp | p_Calp_hp
+ggsave("Fig_3A.pdf", plot = combined_inflamm_plot_hor, bg = "transparent", width = 14, height = 7)
+
+############## By AT Status ##############
+single_tp_at_ngal <- ps_mtg_single_tp_meta %>%
+  select(c(Sample_ID, ID, log2_NGAL, Age, Sex, BMI, apoe4_carriage, Diabetes, Hypertension, amyloid_tau_status)) %>%
+  filter(complete.cases(.)) # Eliminating rows with NAs 
+
+options(na.action='na.fail')
+ngal_at.model <- lm(log2_NGAL ~ Age + Sex + BMI + apoe4_carriage + Diabetes + Hypertension + amyloid_tau_status, data = single_tp_at_ngal)
+summary(ngal_at.model)
+ngal_at_model_summary <- tidy(ngal_at.model)
+ngal_at_model_summary$q.value <- p.adjust(ngal_at_model_summary$p.value, method = "BH")
+write.csv(ngal_at_model_summary, "261120_log2_NGAL_singletp_lm_summary_AT.csv", row.names = F)
+
+## Adjusted means (EMMs)
+ngal_at_emm <- pairs(emmeans(ngal_at.model, ~ amyloid_tau_status), adjust = "none")
+summary(ngal_at_emm)
+ngal_at_comp <- as.data.frame(ngal_at_emm)
+ngal_at_comp$BH.adj.p <- p.adjust(ngal_at_comp$p.value, method = "BH")
+write.csv(ngal_at_comp, "261120_NGAL_AT_LMM_emmeans_results.csv", row.names = F)
+ngal_at_sig <- ngal_at_comp %>%
+  filter(p.value < 0.05) %>%
+  mutate(
+    label = paste0("q = ", signif(BH.adj.p, 2)),
+    group1 = gsub("[()]", "", gsub(" -.*", "", contrast)),
+    group2 = gsub("[()]", "", gsub(".*- ", "", contrast)))
+write.csv(ngal_at_sig, "261018_NGAL_AT_BH_adj_LMM_emmeans_signif_results.csv", row.names = F)
+
+p_NGAL_at_status <- ggplot(single_tp_at_ngal, aes(x = amyloid_tau_status, y = log2_NGAL, fill = amyloid_tau_status)) +
+  geom_boxplot(outlier.shape = NA) +  # Avoids plotting outliers as points since we'll overlay scatter
+  geom_jitter(aes(color = amyloid_tau_status),shape = 21, color = "black", width = 0.2, size = 2, stroke = 0.4, alpha = 0.6) +
+  scale_y_continuous(expand = expansion(mult = c(0.1, 0.1))) +  # Adds padding at the bottom
+  scale_fill_manual(values = custom_colors_at_status) + 
+  scale_color_manual(values = custom_colors_at_status) +
+  labs(x = "Amyloid Tau Status",
+       y = "Log2 Stool NGAL (ug/mL)",
+       fill = "Amyloid Tau Status") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 50, hjust = 1, size = 14),
+        axis.text.y = element_text(size = 14),
+        axis.title.x = element_text(size = 16),
+        axis.title.y = element_text(size = 16),
+        legend.title = element_text(size = 16),
+        legend.text = element_text(size = 13),
+        legend.position = "none",
+        legend.background = element_rect(fill = "white", color = "black"),
+        plot.margin = margin(t = 10, r = 10, b = 50, l = 10)) +  # Increase bottom margin
+  coord_cartesian(clip = "off")   # Prevents clipping of points at the bottom
+
+y_positions <- single_tp_at_ngal %>%
+  group_by(amyloid_tau_status) %>%
+  summarise(y_max = max(log2_NGAL, na.rm = TRUE)) %>%
+  deframe()
+
+step_height <- 0.5
+for(i in seq_len(nrow(ngal_at_sig))) {
+  g1 <- ngal_at_sig$group1[i]
+  g2 <- ngal_at_sig$group2[i]
+  label <- ngal_at_sig$label[i]
+  
+  # x-axis positions
+  x1 <- which(levels(single_tp_at_ngal$amyloid_tau_status) == g1)
+  x2 <- which(levels(single_tp_at_ngal$amyloid_tau_status) == g2)
+  
+  # y-axis position: a bit above boxplots
+  y <- max(y_positions[c(g1,g2)], na.rm = TRUE) + step_height * i
+  
+  p_NGAL_at_status <- p_NGAL_at_status + 
+    annotate("segment", x = x1, xend = x2, y = y, yend = y) +
+    annotate("text", x = mean(c(x1, x2)), y = y + 0.2, label = label, size = 4.5)
+}
+#ggsave("261018_NGAL_LMM_pvalues_AT_Status_HP.pdf", plot = p_NGAL_at_status, bg = "transparent", width = 10, height = 8) 
+
+############# Calprotectin ##########
+single_tp_at_calp <- ps_mtg_single_tp_meta %>%
+  select(c(Sample_ID, ID, log2_Calp, Age, Sex, BMI, apoe4_carriage, Diabetes, Hypertension, amyloid_tau_status)) %>%
+  filter(complete.cases(.)) # Eliminating rows with NAs 
+
+options(na.action='na.fail')
+calp_at.model <- lm(log2_Calp ~ Age + Sex + BMI + apoe4_carriage + Diabetes + Hypertension + amyloid_tau_status, data = single_tp_at_calp)
+summary(calp_at.model)
+calp_at_model_summary <- tidy(calp_at.model)
+calp_at_model_summary$q.value <- p.adjust(calp_at_model_summary$p.value, method = "BH")
+write.csv(calp_at_model_summary, "261120_log2_Calp_singletp_lm_summary_HP_AT.csv", row.names = F)
+
+## Adjusted means (EMMs)
+calp_at_emm <- pairs(emmeans(calp_at.model, ~ amyloid_tau_status), adjust = "none")
+summary(calp_at_emm)
+calp_at_comp <- as.data.frame(calp_at_emm)
+calp_at_comp$BH.adj.p <- p.adjust(calp_at_comp$p.value, method = "BH")
+write.csv(calp_at_comp, "261120_Calp_AT_LMM_emmeans_results.csv", row.names = F)
+calp_at_sig <- calp_at_comp %>%
+  filter(p.value < 0.05) %>%
+  mutate(
+    label = paste0("q = ", signif(BH.adj.p, 2)),
+    group1 = gsub("[()]", "", gsub(" -.*", "", contrast)),
+    group2 = gsub("[()]", "", gsub(".*- ", "", contrast))
+  )
+write.csv(calp_at_sig, "261018_Calp_AT_BH_adj_LMM_emmeans_signif_results.csv", row.names = F)
+
+p_Calp_at_status <- ggplot(single_tp_at_calp, aes(x = amyloid_tau_status, y = log2_Calp, fill = amyloid_tau_status)) +
+  geom_boxplot(outlier.shape = NA) +  # Avoids plotting outliers as points since we'll overlay scatter
+  geom_jitter(aes(color = single_tp_at_calp),shape = 21, color = "black", width = 0.2, size = 2, stroke = 0.4, alpha = 0.6) +
+  scale_y_continuous(expand = expansion(mult = c(0.1, 0.1))) +  # Adds padding at the bottom
+  scale_fill_manual(values = custom_colors_at_status) + 
+  scale_color_manual(values = custom_colors_at_status) +
+  labs(x = "Amyloid Tau Status",
+       y = "Log2 Stool Calprotectin (ug/mL)",
+       fill = "Amyloid Tau Status") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 50, hjust = 1, size = 14),
+        axis.text.y = element_text(size = 14),
+        axis.title.x = element_text(size = 16),
+        axis.title.y = element_text(size = 16),
+        legend.title = element_text(size = 16),
+        legend.text = element_text(size = 13),
+        legend.position = "none",
+        legend.background = element_rect(fill = "white", color = "black"),
+        plot.margin = margin(t = 10, r = 10, b = 50, l = 10)) +  # Increase bottom margin
+  coord_cartesian(clip = "off")   # Prevents clipping of points at the bottom
+
+y_positions <- ps_mtg_single_tp_meta %>%
+  group_by(amyloid_tau_status) %>%
+  summarise(y_max = max(log2_Calp, na.rm = TRUE)) %>%
+  deframe()
+
+step_height <- 1.7
+for(i in seq_len(nrow(calp_at_sig))) {
+  g1 <- calp_at_sig$group1[i]
+  g2 <- calp_at_sig$group2[i]
+  label <- calp_at_sig$label[i]
+  
+  # x-axis positions
+  x1 <- which(levels(single_tp_at_calp$amyloid_tau_status) == g1)
+  x2 <- which(levels(single_tp_at_calp$amyloid_tau_status) == g2)
+  
+  # y-axis position: a bit above boxplots
+  y <- max(y_positions[c(g1,g2)], na.rm = TRUE) + step_height * i
+  
+  p_Calp_at_status <- p_Calp_at_status + 
+    annotate("segment", x = x1, xend = x2, y = y, yend = y) +
+    annotate("text", x = mean(c(x1, x2)), y = y + 0.8, label = label, size = 4.5)
+}
+#ggsave("260309_Calp_LMM_pvalues_AT_Status_HP.pdf", plot = p_Calp_at_status, bg = "transparent", width = 10, height = 8) 
+
+### Combined NGAL + Calprotectin plot
+combined_inflamm_plot_hor_AT <- p_NGAL_at_status | p_Calp_at_status
+ggsave("ExtendedFig_2A_hor_hp.pdf", plot = combined_inflamm_plot_hor_AT, bg = "transparent", width = 14, height = 8)
+
+###############----------- Extended Data Figure 4B and C --------------#############
+#### Correlations between inflammation markers and PET amyloid-beta ####
+# Calculate correlation
+cor_test <- cor.test(df_single_tp_hp_ngal$combined.centiloid, df_single_tp_hp_ngal$log2_NGAL)
+r_val <- round(cor_test$estimate, 2)
+p_val <- round(cor_test$p.value, 5)
+
+# Plot
+ngal_cor <- ggplot(df_single_tp_hp_ngal, aes(x = combined.centiloid, y = log2_NGAL)) +
+  geom_point(size = 2, alpha = 0.7) +
+  geom_smooth(method = "lm", color = "steelblue", fill = "grey80") +
+  annotate("text", x = Inf, y = Inf, 
+           label = paste0("R = ", r_val, ", p = ", p_val),
+           hjust = 1.1, vjust = 1.5, size = 5) +
+  labs(x = "Centiloid",
+       y = "Log2 NGAL (ug/mL)") +
+  theme_minimal() %>%
+  theme(axis.title = element_text(size = 16, face = "bold"),
+        axis.text = element_text(size = 12))
+ggsave("260309_NGAL_Centiloid_cor.pdf", plot = ngal_cor, bg = "transparent", width = 8, height = 6) 
+
+cor_test <- cor.test(single_tp_hp_calp$combined.centiloid, single_tp_hp_calp$log2_Calp)
+r_val <- round(cor_test$estimate, 2)
+p_val <- round(cor_test$p.value, 5)
+
+# Plot
+calp_cor <- ggplot(single_tp_hp_calp, aes(x = combined.centiloid, y = log2_Calp)) +
+  geom_point(size = 2, alpha = 0.7) +
+  geom_smooth(method = "lm", color = "steelblue", fill = "grey80") +
+  annotate("text", x = Inf, y = Inf, 
+           label = paste0("R = ", r_val, ", p = ", p_val),
+           hjust = 1.1, vjust = 1.5, size = 5) +
+  labs(x = "Centiloid",
+       y = "Log2 Calprotectin (ug/mL)") +
+  theme_minimal() %>%
+  theme(axis.title = element_text(size = 16, face = "bold"),
+        axis.text = element_text(size = 12))
+ggsave("260309_Calprotectin_Centiloid_cor.pdf", plot = calp_cor, bg = "transparent", width = 8, height = 6) 
+```
+
+Figure 2 and Extended Data Fig. 3: Plasma LPS
+```{r}
+## LPS not normally distributed
+shapiro.test(ps_mtg_single_tp_meta$LPS_EIA_units)
+shapiro.test(ps_mtg_single_tp_meta$CRP_ug_mL)
+shapiro.test(ps_mtg_single_tp_meta$LBP_ug_mL)
+ks.test(ps_mtg_single_tp_meta$LPS_EIA_units, "pnorm",
+        mean = mean(ps_mtg_single_tp_meta$LPS_EIA_units, na.rm = TRUE),
+        sd = sd(ps_mtg_single_tp_meta$LPS_EIA_units, na.rm = TRUE))
+
+# Log transform
+ps_mtg_single_tp_meta$plasma_log_LPS <- log(ps_mtg_single_tp_meta$LPS_EIA_units)
+ps_mtg_single_tp_meta$plasma_log_CRP <- log(ps_mtg_single_tp_meta$CRP_ug_mL)
+
+# Normally distributed now
+shapiro.test(ps_mtg_single_tp_meta$plasma_log_LPS)
+shapiro.test(ps_mtg_single_tp_meta$plasma_log_CRP)
+
+## Visualize before and after log transformation
+pdf("261008_LPS_normality_plots.pdf")
+par(mfrow = c(2, 2))  # 2x2 plot grid
+
+# Original data
+hist(ps_mtg_single_tp_meta$LPS_EIA_units, main = "Original", xlab = "LPS (EIA units)")
+qqnorm(ps_mtg_single_tp_meta$LPS_EIA_units, main = "Q-Q Plot: Original")
+qqline(ps_mtg_single_tp_meta$LPS_EIA_units, col = "red")
+
+# Log-transformed data
+hist(ps_mtg_single_tp_meta$plasma_log_LPS, main = "Log-Transformed", xlab = "log(LPS)")
+qqnorm(ps_mtg_single_tp_meta$plasma_log_LPS, main = "Q-Q Plot: Log-Transformed")
+qqline(ps_mtg_single_tp_meta$plasma_log_LPS, col = "red")
+dev.off()
+
+
+### Compare log LPS between healthy and preclinical groups #####
+df_single_tp_hp_lps <- ps_mtg_single_tp_meta %>%
+  select(c(Sample_ID, ID, plasma_log_LPS, Age, Sex, BMI, apoe4_carriage, Diabetes, Hypertension, AD_Status,amyloid_tau_status, combined.centiloid)) %>%
+  filter(complete.cases(.)) # Eliminating rows with NAs 
+
+# N=156
+table(df_single_tp_hp_lps$AD_Status)
+table(df_single_tp_hp_lps$amyloid_tau_status)
+
+######## LPS is significantly different ########
+LPS_sample_sizes_ad_status <- df_single_tp_hp_lps %>%
+  filter(!is.na(plasma_log_LPS)) %>%
+  group_by(AD_Status) %>%
+  summarise(n = n(), .groups = 'drop')  # Create a summary with sample sizes
+
+options(na.action='na.fail')
+lps.model <- lm(plasma_log_LPS ~ Age + Sex + BMI + apoe4_carriage + Diabetes + Hypertension + AD_Status, data = df_single_tp_hp_lps)
+summary(lps.model)
+lps_model_summary <- tidy(lps.model)
+write.csv(lps_model_summary, "261018_log2_LPS_singletp_lm_summary_hp.csv", row.names = F)
+
+#### Adjusted EMMs
+lps_emm <- pairs(emmeans(lps.model, ~ AD_Status), adjust = "BH")
+summary(lps_emm)
+
+lps_ad_comp <- as.data.frame(lps_emm)
+write.csv(lps_ad_comp, "261018_LPS_AD_LMM_emmeans_results.csv", row.names = F)
+
+
+bp_logLPS <- ggplot(df_single_tp_hp_lps, aes(x = AD_Status, y = plasma_log_LPS, fill = AD_Status)) +
+  geom_boxplot(outlier.shape = NA) +  # Avoids plotting outliers as points since we'll overlay scatter
+  geom_jitter(shape = 21, color = "black", width = 0.2, size = 2, stroke = 0.4, alpha = 0.6) +
+  scale_y_continuous(expand = expansion(mult = c(0.1, 0.1))) +  # Adds padding at the bottom
+  scale_fill_manual(values = custom_colors_hp) +  # Change the palette to suit your preferences
+  labs(x = "AD Status",
+       y = "Log Plasma LPS (EIA units)",
+       fill = "AD Status") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(size = 16, color = "black"),
+        axis.text.y = element_text(size = 16),
+        axis.title.x = element_text(size = 16),
+        axis.title.y = element_text(size = 18),
+        legend.position = "none",
+        plot.margin = margin(t = 10, r = 10, b = 50, l = 10),
+        axis.line = element_line(color = "black", linewidth = 0.6),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")
+  ) +  # Increase bottom margin
+  coord_cartesian(clip = "off") +  # Prevents clipping of points at the bottom
+  stat_compare_means(comparisons = list(c("Healthy", "Preclinical")),
+                     method = "wilcox.test", p.adjust.method = "BH", label = "p.format",
+                     step.increase = 0.1, # Helps prevent label overlap
+                     size = 6, #adjusted p-value label size
+                     show.legend = FALSE) 
+ggsave("261008_HP_single_tp_LPS_wilcox.pdf", plot = bp_logLPS, bg = "transparent", width = 10, height = 8)
+
+
+df_single_tp_hp_crp <- ps_mtg_single_tp_meta %>%
+  select(c(Sample_ID, ID, plasma_log_CRP, Age, Sex, BMI, apoe4_carriage, Diabetes, Hypertension, AD_Status,amyloid_tau_status, combined.centiloid)) %>%
+  filter(complete.cases(.)) # Eliminating rows with NAs 
+
+CRP_sample_sizes_ad_status <- df_single_tp_hp_crp %>%
+  filter(!is.na(plasma_log_CRP)) %>%
+  group_by(AD_Status) %>%
+  summarise(n = n(), .groups = 'drop')  # Create a summary with sample sizes
+
+options(na.action='na.fail')
+crp.model <- lm(plasma_log_CRP ~ Age + Sex + BMI + apoe4_carriage + Diabetes + Hypertension + AD_Status, data = df_single_tp_hp_crp)
+summary(crp.model)
+crp_model_summary <- tidy(crp.model)
+write.csv(crp_model_summary, "261120_log_CRP_singletp_lm_summary_hp.csv", row.names = F)
+
+#### Adjusted EMMs
+crp_emm <- pairs(emmeans(crp.model, ~ AD_Status), adjust = "BH")
+summary(crp_emm)
+
+crp_ad_comp <- as.data.frame(crp_emm)
+write.csv(crp_ad_comp, "261018_CRP_AD_LMM_emmeans_results.csv", row.names = F)
+bp_logCRP <- ggplot(ps_mtg_single_tp_meta, aes(x = AD_Status, y = plasma_log_CRP, fill = AD_Status)) +
+  geom_boxplot(outlier.shape = NA) +  # Avoids plotting outliers as points since we'll overlay scatter
+  geom_jitter(shape = 21, color = "black", width = 0.2, size = 2, stroke = 0.4, alpha = 0.6) +
+  scale_y_continuous(expand = expansion(mult = c(0.1, 0.1))) +  # Adds padding at the bottom
+  scale_fill_manual(values = custom_colors_hp) +  # Change the palette to suit your preferences
+  labs(x = "AD Status",
+       y = "Log Plasma CRP (ug/mL)",
+       fill = "AD Status") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(size = 16, color = "black"),
+        axis.text.y = element_text(size = 16),
+        axis.title.x = element_text(size = 16),
+        axis.title.y = element_text(size = 18),
+        legend.position = "none",
+        plot.margin = margin(t = 10, r = 10, b = 50, l = 10),
+        axis.line = element_line(color = "black", linewidth = 0.6),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")
+  ) +  # Increase bottom margin
+  coord_cartesian(clip = "off") +  # Prevents clipping of points at the bottom
+  stat_compare_means(comparisons = list(c("Healthy", "Preclinical")),
+                     method = "wilcox.test", p.adjust.method = "BH", label = "p.format",
+                     step.increase = 0.1, # Helps prevent label overlap
+                     size = 6, #adjusted p-value label size
+                     show.legend = FALSE) 
+ggsave("261018_HP_single_tp_CRP_wilcox.pdf", plot = bp_logCRP, bg = "transparent", width = 10, height = 8)
+
+
+#### LPS AT Separation #########
+df_single_tp_hp_lps$amyloid_tau_status <- factor(df_single_tp_hp_lps$amyloid_tau_status, levels = c("Healthy A-/T-", "Preclinical A+/T-", "Preclinical A+/T+", "Healthy A-/T+"))
+
+options(na.action='na.fail')
+lps_at.model <- lm(plasma_log_LPS ~ Age + Sex + BMI + apoe4_carriage + Diabetes + Hypertension + amyloid_tau_status, data = df_single_tp_hp_lps)
+summary(lps_at.model)
+lps_at_model_summary <- tidy(lps_at.model)
+write.csv(lps_at_model_summary, "261008_plasma_log_lps_singletp_lm_summary_HP_ATstatus.csv", row.names = F)
+
+## Adjusted means (EMMs)
+lps_at_emm <- pairs(emmeans(lps_at.model, ~ amyloid_tau_status), adjust = "none")
+summary(lps_at_emm)
+lps_at_comp <- as.data.frame(lps_at_emm)
+lps_at_comp$BH.adj.p <- p.adjust(lps_at_comp$p.value, method = "BH")
+write.csv(lps_at_comp, "261008_Calp_AT_LMM_emmeans_results.csv", row.names = F)
+
+lps_at_comp <- lps_at_comp %>%
+  filter(p.value < 0.05) %>%
+  mutate(
+    label = paste0("q = ", signif(BH.adj.p, 2)),
+    group1 = gsub("[()]", "", gsub(" -.*", "", contrast)),
+    group2 = gsub("[()]", "", gsub(".*- ", "", contrast)))
+
+p_lps_at_status <- ggplot(df_single_tp_hp_lps, aes(x = amyloid_tau_status, y = plasma_log_LPS, fill = amyloid_tau_status)) +
+  geom_boxplot(outlier.shape = NA) +  # Avoids plotting outliers as points since we'll overlay scatter
+  geom_jitter(aes(color = df_single_tp_hp_lps),shape = 21, color = "black", width = 0.2, size = 2, stroke = 0.4, alpha = 0.6) +
+  scale_y_continuous(expand = expansion(mult = c(0.1, 0.1))) +  # Adds padding at the bottom
+  scale_fill_manual(values = custom_colors_at_status) + 
+  scale_color_manual(values = custom_colors_at_status) +
+  labs(x = "Amyloid Tau Status",
+       y = "Log Plasma LPS (EIA units)",
+       fill = "Amyloid Tau Status") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 50, hjust = 1, size = 14, color = "black"),
+        axis.text.y = element_text(size = 14),
+        axis.title.x = element_text(size = 16),
+        axis.title.y = element_text(size = 16),
+        legend.title = element_text(size = 16),
+        legend.text = element_text(size = 13),
+        legend.position = "none",
+        legend.background = element_rect(fill = "white", color = "black"),
+        plot.margin = margin(t = 10, r = 10, b = 50, l = 10)) +  # Increase bottom margin
+  coord_cartesian(clip = "off")   # Prevents clipping of points at the bottom
+
+y_positions <- df_single_tp_hp_lps %>%
+  group_by(amyloid_tau_status) %>%
+  summarise(y_max = max(plasma_log_LPS, na.rm = TRUE)) %>% deframe()
+
+step_height <- 0.5
+for(i in seq_len(nrow(lps_at_comp))) {
+  g1 <- lps_at_comp$group1[i]
+  g2 <- lps_at_comp$group2[i]
+  label <- lps_at_comp$label[i]
+  
+  # x-axis positions
+  x1 <- which(levels(df_single_tp_hp_lps$amyloid_tau_status) == g1)
+  x2 <- which(levels(df_single_tp_hp_lps$amyloid_tau_status) == g2)
+  
+  # y-axis position: a bit above boxplots
+  y <- max(y_positions[c(g1,g2)], na.rm = TRUE) + step_height * i
+  
+  p_lps_at_status <- p_lps_at_status + 
+    annotate("segment", x = x1, xend = x2, y = y, yend = y) +
+    annotate("text", x = mean(c(x1, x2)), y = y + 0.1, label = label, size = 4.5)
+}
+ggsave("261008_Calp_LMM_pvalues_AT_Status_HP.pdf", plot = p_lps_at_status, bg = "transparent", width = 10, height = 8) 
+
+df_single_tp_hp_crp$amyloid_tau_status <- factor(df_single_tp_hp_crp$amyloid_tau_status, levels = c("Healthy A-/T-", "Preclinical A+/T-", "Preclinical A+/T+", "Healthy A-/T+"))
+
+options(na.action='na.fail')
+crp_at.model <- lm(plasma_log_CRP ~ Age + Sex + BMI + apoe4_carriage + Diabetes + Hypertension + amyloid_tau_status, data = df_single_tp_hp_crp)
+summary(crp_at.model)
+crp_at_model_summary <- tidy(crp_at.model)
+write.csv(crp_at_model_summary, "261018_plasma_log_crp_singletp_lm_summary_HP_ATstatus.csv", row.names = F)
+
+## Adjusted means (EMMs)
+crp_at_emm <- pairs(emmeans(crp_at.model, ~ amyloid_tau_status), adjust = "none")
+summary(crp_at_emm)
+crp_at_comp <- as.data.frame(crp_at_emm)
+crp_at_comp$BH.adj.p <- p.adjust(crp_at_comp$p.value, method = "BH")
+write.csv(crp_at_comp, "261018_CRP_AT_LMM_emmeans_results.csv", row.names = F)
+
+crp_at_comp <- crp_at_comp %>%
+  filter(p.value < 0.05) %>%
+  mutate(
+    label = paste0("q = ", signif(BH.adj.p, 2)),
+    group1 = gsub("[()]", "", gsub(" -.*", "", contrast)),
+    group2 = gsub("[()]", "", gsub(".*- ", "", contrast)))
+
+p_crp_at_status <- ggplot(df_single_tp_hp_crp, aes(x = amyloid_tau_status, y = plasma_log_CRP, fill = amyloid_tau_status)) +
+  geom_boxplot(outlier.shape = NA) +  # Avoids plotting outliers as points since we'll overlay scatter
+  geom_jitter(aes(color = df_single_tp_hp_crp),shape = 21, color = "black", width = 0.2, size = 2, stroke = 0.4, alpha = 0.6) +
+  scale_y_continuous(expand = expansion(mult = c(0.1, 0.1))) +  # Adds padding at the bottom
+  scale_fill_manual(values = custom_colors_at_status) + 
+  scale_color_manual(values = custom_colors_at_status) +
+  labs(x = "Amyloid Tau Status",
+       y = "Log Plasma CRP (ug/mL)",
+       fill = "Amyloid Tau Status") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 50, hjust = 1, size = 14, color = "black"),
+        axis.text.y = element_text(size = 14),
+        axis.title.x = element_text(size = 16),
+        axis.title.y = element_text(size = 16),
+        legend.title = element_text(size = 16),
+        legend.text = element_text(size = 13),
+        legend.position = "none",
+        legend.background = element_rect(fill = "white", color = "black"),
+        plot.margin = margin(t = 10, r = 10, b = 50, l = 10)) +  # Increase bottom margin
+  coord_cartesian(clip = "off")   # Prevents clipping of points at the bottom
+
+y_positions <- df_single_tp_hp_crp %>%
+  group_by(amyloid_tau_status) %>%
+  summarise(y_max = max(plasma_log_CRP, na.rm = TRUE)) %>% deframe()
+
+step_height <- 0.5
+for(i in seq_len(nrow(crp_at_comp))) {
+  g1 <- crp_at_comp$group1[i]
+  g2 <- crp_at_comp$group2[i]
+  label <- crp_at_comp$label[i]
+  
+  # x-axis positions
+  x1 <- which(levels(df_single_tp_hp_crp$amyloid_tau_status) == g1)
+  x2 <- which(levels(df_single_tp_hp_crp$amyloid_tau_status) == g2)
+  
+  # y-axis position: a bit above boxplots
+  y <- max(y_positions[c(g1,g2)], na.rm = TRUE) + step_height * i
+  
+  p_crp_at_status <- p_crp_at_status + 
+    annotate("segment", x = x1, xend = x2, y = y, yend = y) +
+    annotate("text", x = mean(c(x1, x2)), y = y + 0.1, label = label, size = 4.5)
+}
+ggsave("261018_Calp_LMM_pvalues_AT_Status_HP.pdf", plot = p_crp_at_status, bg = "transparent", width = 10, height = 8) 
+
+### Combined LPS + CRP plot
+combined_lps_crp <- p_lps_at_status | p_crp_at_status
+ggsave("ExtendedFig_2C-D.pdf", plot = combined_lps_crp, bg = "transparent", width = 14, height = 8)
+
+
+#### Correlations between LPS and PET amyloid-beta and tau ####
+# Calculate correlation
+cor_test <- cor.test(df_single_tp_hp_lps$combined.centiloid, df_single_tp_hp_lps$plasma_log_LPS)
+r_val <- round(cor_test$estimate, 2)
+p_val <- round(cor_test$p.value, 5)
+
+# Plot
+lps_amyl_cor <- ggplot(df_single_tp_hp_lps, aes(x = combined.centiloid, y = plasma_log_LPS)) +
+  geom_point(size = 2, alpha = 0.7) +
+  geom_smooth(method = "lm", color = "steelblue", fill = "grey80") +
+  annotate("text", x = Inf, y = Inf, 
+           label = paste0("R = ", r_val, ", p = ", p_val),
+           hjust = 1.1, vjust = 1.5, size = 5) +
+  labs(x = "Centiloid",
+       y = "Log(LPS)") +
+  theme_minimal() %>%
+  theme(axis.title = element_text(size = 16, face = "bold"),
+        axis.text = element_text(size = 12))
+ggsave("261008_LPS_Centiloid_cor.pdf", plot = lps_amyl_cor, bg = "transparent", width = 8, height = 6) 
+
+
+# Plot
+calp_cor <- ggplot(single_tp_hp_calp, aes(x = combined.centiloid, y = log2_Calp)) +
+  geom_point(size = 2, alpha = 0.7) +
+  geom_smooth(method = "lm", color = "steelblue", fill = "grey80") +
+  annotate("text", x = Inf, y = Inf, 
+           label = paste0("R = ", r_val, ", p = ", p_val),
+           hjust = 1.1, vjust = 1.5, size = 5) +
+  labs(x = "Centiloid",
+       y = "Log2 Calprotectin (ug/mL)") +
+  theme_minimal() %>%
+  theme(axis.title = element_text(size = 16, face = "bold"),
+        axis.text = element_text(size = 12))
+ggsave("260309_Calprotectin_Centiloid_cor.pdf", plot = calp_cor, bg = "transparent", width = 8, height = 6) 
+```
+
+Figure 3: Longitudinal GM compositional stability
+```{r}
+mtg_bc_matrix <- create_pairwise_beta_div_matrix(ps_obj = ps_MTG,
+                                                 distance_metric = "bray",
+                                                 distance_metric_string = "BC",
+                                                 output_name = "m3_MTG_gt10M_stable_noOther_BC")
+mtg_bc_matrix_filt <- mtg_bc_matrix %>%
+  filter(Comparison == "Within participant") 
+
+## Only keep pairwse unifrac comparisons from baseline sample
+mtg_bc_matrix_baseline <- mtg_bc_matrix_filt %>%
+   filter(Time_point.x == 1 | Time_point.y == 1)
+# Check which column got the baseline sample. In this case columns y have info 
+## on the baseline sample
+summary(mtg_bc_matrix_baseline$Time_point.y)
+
+## Select only relevant columns
+mtg_bc_matrix_baseline <- mtg_bc_matrix_baseline %>% 
+  select(Sample_ID1, Sample_ID2, bray, Time_diff_from_baseline_mo.x, Time_diff_from_baseline_mo.y, ID.x, Time_point.x, BMI.x, AD_Status.x, Age.x, Sex.x, apoe4_carriage.x, Diabetes.x, Hypertension.x, ID.y, Time_point.y, BMI.y, AD_Status.y, Age.y, Sex.y, apoe4_carriage.y, Diabetes.y, Hypertension.y) %>%
+  dplyr::rename(GM_tax_bc = bray)
+
+summary(mtg_bc_matrix_baseline$Time_point.y) 
+
+# Eliminating rows with NAs
+mtg_bc_matrix_baseline_subset <- mtg_bc_matrix_baseline %>% filter(complete.cases(.))
+summary(mtg_bc_matrix_baseline_subset$AD_Status.y)
+
+# Filter out any consecutive samples that are less than 6 months apart from each other since we are interested in GM changes that happen over longer periods of time
+mtg_bc_matrix_baseline_subset <- mtg_bc_matrix_baseline_subset %>%
+  arrange(ID.y, Time_diff_from_baseline_mo.x) %>% 
+  group_by(ID.y) %>%
+  mutate(
+    Time_diff_from_previous_sample_mo = case_when(
+      # For the first temporal sample, the previous sample IS the baseline (time = 0)
+      # so the diff from previous = diff from baseline
+      is.na(lag(Time_diff_from_baseline_mo.x)) ~ Time_diff_from_baseline_mo.x,
+      # For all other samples, subtract the previous sample's time from the current
+      TRUE ~ Time_diff_from_baseline_mo.x - lag(Time_diff_from_baseline_mo.x)
+    )
+  ) %>%
+  ungroup() %>% filter(Time_diff_from_previous_sample_mo >= 6)
+
+summary(mtg_bc_matrix_baseline_subset$AD_Status.y)
+summary(mtg_bc_matrix_baseline_subset$Time_diff_from_baseline_mo.x)
+
+## Time frames more or less match between the two groups
+mtg_bc_matrix_baseline_timeframe_hp <- mtg_bc_matrix_baseline_subset %>%
+  group_by(AD_Status.y) %>%
+  summarise(
+    min_timeframe_mo = min(Time_diff_from_baseline_mo.x),
+    max_timeframe_mo = max(Time_diff_from_baseline_mo.x))
+
+p_long_bc_timediff_hp <- ggplot(mtg_bc_matrix_baseline_subset, aes(x = Time_diff_from_baseline_mo.x, y = GM_tax_bc, color = AD_Status.y, group = ID.y)) +
+  geom_point() +  # Add points
+  geom_line(linetype = "dashed") +   # Connect points belonging to the same ID +
+  geom_smooth(aes(group = AD_Status.y), method = "lm", se = TRUE) +  # Add a linear regression line with confidence intervals
+  scale_color_manual(values = custom_colors_hp) +
+  scale_x_continuous(breaks = seq(0, max(mtg_unif_matrix_baseline_subset$Time_diff_from_baseline_mo.x), by = 6)) +  # Set x-axis breaks at every 6 months
+  labs(x = "Time difference from baseline sample (Months)", 
+       y = "GM Dynamism (Bray-Curtis Dissimilarity)",
+       color = "AD Status") +  # Label the axes and legend
+  theme_minimal() +  # Use a minimal theme for a clean look
+  theme(
+    text = element_text(size = 16),       # Set general font size
+    axis.title = element_text(size = 18), # Axis titles font size
+    axis.text = element_text(size = 14),  # Axis labels font size
+    legend.title = element_text(size = 16), # Legend title font size
+    legend.text = element_text(size = 14),  # Legend labels font size
+    plot.title = element_text(size = 20, face = "bold"), # Optional: Add a title with larger font size
+    plot.subtitle = element_text(size = 18))
+ggsave("261018_MTG_long_bc_timediff_from_baseline_hp.pdf", plot = p_long_unif_timediff_hp,bg = "transparent", width = 10, height = 8)
+
+# Fit mixed-effects model
+options(na.action='na.fail')
+lmm_hp.interaction <- lmer(GM_tax_bc ~  Time_diff_from_baseline_mo.x + Age.y + Sex.y + BMI.y + apoe4_carriage.y + Diabetes.y + Hypertension.y + AD_Status.y + Time_diff_from_baseline_mo.x * AD_Status.y + (1 | ID.y), data = mtg_unif_matrix_baseline_subset, REML = FALSE)
+library(broom.mixed)
+summary(lmm_hp.interaction)
+lmm_hp_interaction_lmer <- tidy(lmm_hp.interaction)
+write.csv(lmm_hp_interaction_lmer, "261018_MTG_long_hp_bc_dynamism_interaction_lmm.csv", row.names = F)
+
+lmm_hp.null <- lmer(GM_tax_bc ~ Time_diff_from_baseline_mo.x + Age.y + Sex.y + BMI.y + apoe4_carriage.y + Diabetes.y + Hypertension.y + (1 | ID.y), data = mtg_bc_matrix_baseline_subset, REML = FALSE)
+summary(lmm_hp.null)
+
+lmm_hp.model <- lmer(GM_tax_bc ~ Time_diff_from_baseline_mo.x + Age.y + Sex.y + BMI.y + apoe4_carriage.y + Diabetes.y + Hypertension.y + AD_Status.y + (1 | ID.y), data = mtg_bc_matrix_baseline_subset, REML = FALSE)
+summary(lmm_hp.model)
+lmm_hp_lmer <- tidy(lmm_hp.model)
+write.csv(lmm_hp_lmer, "261018_MTG_long_hp_unif_dynamism_lmm.csv", row.names = F)
+
+anova(lmm_hp.null, lmm_hp.model)
+write.csv(anova(lmm_hp.null, lmm_hp.model), "261018_MTG_long_hp_bc_dynamism_lmm_anova.csv")
+
+write.csv(mtg_bc_matrix_baseline_subset, "GM_longitudinal_stability_samples.csv", row.names = F)
+
+```
+
+
+
+Guild Analysis 
+```{r}
+library(mEQO)
+library(data.table)
+set.seed(42)
+
+
+train_indices <- sample(1:198, size = 0.6 * 198)
+meta <- sample_data(ps_mtg_single_tp) %>% as.data.frame()
+meta$train_test <- "test"
+meta$train_test[train_indices] <- "train"
+sample_data(ps_mtg_single_tp) <- sample_data(meta)
+ps_mtg_single_tp_train <- ps_mtg_single_tp %>% ps_filter(train_test == "train")
+
+Nmax    <- 10
+maxIter <- 200
+
+M <- t(as(otu_table(ps_mtg_single_tp_train), "matrix"))
+
+sd <- data.frame(sample_data(ps_mtg_single_tp_train), check.names = FALSE)
+AD_Status <- factor(sd[rownames(M), "AD_Status"])
+
+Y <- sapply(levels(AD_Status), function(l) as.numeric(AD_Status == l))
+rownames(Y) <- rownames(M)
+ 
+guild <- EQO_ga("d", M, Y, Nmax = Nmax, maxIter = maxIter, monitor = FALSE)
+ 
+guild$members       # taxa in the guild
+guild$performance   
+guild_abundance <- setNames(guild$abundance, rownames(M))
+print(tapply(guild_abundance, AD_Status, summary))
+ 
+
+
+```
+
+Adding guild data to ps object and preparing split for ML
+```{r}
+
+###### Add to guild 
+
+for (species_name in guild$members) {
+  if (species_name %in% taxa_names(ps_MTG)) {
+    species_abundance <- as.vector(otu_table(ps_MTG)[species_name, ]) 
+    sample_data(ps_MTG)[[paste0(species_name, "_abundance")]] <- species_abundance
+  } else {
+    warning(paste("Species", species_name, "not found in phyloseq object"))
+  }
+}
+
+# guild abundance = sum of the taxon columns just added
+added_cols <- paste0(intersect(guild$members, taxa_names(ps_MTG)), "_abundance")
+sample_data(ps_MTG)$guild_abundance <- rowSums(
+  data.frame(sample_data(ps_MTG), check.names = FALSE)[, added_cols, drop = FALSE]
+)
+
+# carry each subject's split to all of its samples in ps
+meta_ps   <- data.frame(sample_data(ps_MTG), check.names = FALSE)
+split_id  <- meta$train_test[match(meta_ps$ID, meta$ID)]          # subject's split
+in_single <- meta_ps$Sample_ID %in% meta$Sample_ID                # the single-tp sample itself
+meta_ps$train_test <- ifelse(in_single, split_id, paste0("long_", split_id))
+meta_ps$train_test[is.na(split_id)] <- NA                         # subject not in single tp
+sample_data(ps_MTG) <- sample_data(meta_ps)
+
+table(meta_ps$train_test, useNA = "ifany")
+
+```
+
+Guild abundance analyses
+```{r}
+## Hard coding guild members
+guild_members <- c("Ruminococcus_torques", "Phocaeicola_vulgatus", "Alistipes_putredinis", "Oscillibacter_sp_ER4", "Roseburia_faecis", "Streptococcus_parasanguinis","Clostridium_leptum",
+                   "GGB9342_SGB14306", "Pseudoruminococcus_massiliensis", "Holdemanella_porci")
+
+guild_members_long <- c('k__Bacteria|p__Firmicutes|c__Clostridia|o__Eubacteriales|f__Lachnospiraceae|g__Mediterraneibacter|s__Ruminococcus_torques',
+                        'k__Bacteria|p__Bacteroidetes|c__Bacteroidia|o__Bacteroidales|f__Bacteroidaceae|g__Phocaeicola|s__Phocaeicola_vulgatus',
+                        'k__Bacteria|p__Bacteroidetes|c__Bacteroidia|o__Bacteroidales|f__Rikenellaceae|g__Alistipes|s__Alistipes_putredinis',
+                        'k__Bacteria|p__Firmicutes|c__Clostridia|o__Eubacteriales|f__Oscillospiraceae|g__Oscillibacter|s__Oscillibacter_sp_ER4',
+                        'k__Bacteria|p__Firmicutes|c__Clostridia|o__Eubacteriales|f__Lachnospiraceae|g__Roseburia|s__Roseburia_faecis',
+                        'k__Bacteria|p__Firmicutes|c__Bacilli|o__Lactobacillales|f__Streptococcaceae|g__Streptococcus|s__Streptococcus_parasanguinis',
+                        'k__Bacteria|p__Firmicutes|c__Clostridia|o__Eubacteriales|f__Oscillospiraceae|g__Oscillospiraceae_unclassified|s__Clostridium_leptum',
+                        'k__Bacteria|p__Firmicutes|c__CFGB2982|o__OFGB2982|f__FGB2982|g__GGB9342|s__GGB9342_SGB14306',
+                        'k__Bacteria|p__Firmicutes|c__Clostridia|o__Eubacteriales|f__Oscillospiraceae|g__Pseudoruminococcus|s__Pseudoruminococcus_massiliensis',
+                        'k__Bacteria|p__Firmicutes|c__Erysipelotrichia|o__Erysipelotrichales|f__Erysipelotrichaceae|g__Holdemanella|s__Holdemanella_porci')
+
+guild_members_long <- gsub("(__[A-Za-z0-9_]+)\\.", "\\1|", guild_members_long)
+
+for (species_name in guild_members_long) {
+  if (species_name %in% taxa_names(ps_MTG)) {
+    species_abundance <- as.vector(otu_table(ps_MTG)[species_name, ])  # Switch to [species, ]
+    sample_data(ps_MTG)[[paste0(species_name, "_abundance")]] <- species_abundance
+  } else {
+    warning(paste("Species", species_name, "not found in phyloseq object"))
+  }
+}
+
+ps_MTG_meta <- data.frame(phyloseq::sample_data(ps_MTG))
+
+ps_MTG_meta$guild_abundance <- rowSums(ps_MTG_meta[, grepl("s__", names(ps_MTG_meta))], na.rm = TRUE)
+write.csv(ps_MTG_meta, "261123_guild_abundance.csv", row.names = FALSE)
+
+ps_MTG_meta <- ps_MTG_meta %>% mutate(guild_abundance_adj = guild_abundance + 1e-6)
+
+closest_meta <- ps_MTG_meta %>% filter(train_test == "train" | train_test == "test")
+
+## Figure 1: guild abundance comparison ###
+p_closest_guild_abundance <- ggplot(closest_meta, aes(x = AD_Status, y = guild_abundance_adj, color = AD_Status)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(width = 0.2, height = 0, alpha = 0.8, size = 1) +
+  stat_compare_means(method = "wilcox.test", label = "p.format") +
+  scale_color_manual(values = custom_colors_hp) +
+  theme_bw() +
+  theme(
+    text = element_text(size = 16),       # Set general font size
+    axis.title = element_text(size = 18), # Axis titles font size
+    axis.text = element_text(size = 14, color = "black"),  # Axis labels font size
+    legend.position = "none") +
+  scale_y_log10() +
+  labs(
+    y = "Guild Abundance (%)",
+    x = "AD Status")
+ggsave("261018_MTG_closest_tp_guild_abund_comparison.pdf", plot = p_closest_guild_abundance,bg = "transparent", width = 8, height = 6)
+
+last_meta <- ps_MTG_meta %>% filter(Sample_time == "last follow-up")
+table(last_meta$AD_Status)
+
+p_last_guild_abundance <- ggplot(last_meta, aes(x = AD_Status, y = guild_abundance_adj, color = AD_Status)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(width = 0.2, height = 0, alpha = 0.8, size = 1) +
+  stat_compare_means(method = "wilcox.test", label = "p.format") +
+  scale_color_manual(values = custom_colors_hp) +
+  theme_bw() +
+  theme(
+    text = element_text(size = 16),       # Set general font size
+    axis.title = element_text(size = 18), # Axis titles font size
+    axis.text = element_text(size = 14, color = "black"),  # Axis labels font size
+    legend.position = "none") +
+  scale_y_log10() +
+  labs(
+    y = "Guild Abundance (%)",
+    x = "AD Status")
+ggsave("261018_MTG_last_tp_guild_abund_comparison.pdf", plot = p_last_guild_abundance,bg = "transparent", width = 8, height = 6)
+```
+
+
+Adding guild data to ps object and preparing split for ML
+```{r}
+
+###### Add to guild 
+
+for (species_name in guild$members) {
+  if (species_name %in% taxa_names(ps_MTG)) {
+    species_abundance <- as.vector(otu_table(ps_MTG)[species_name, ]) 
+    sample_data(ps_MTG)[[paste0(species_name, "_abundance")]] <- species_abundance
+  } else {
+    warning(paste("Species", species_name, "not found in phyloseq object"))
+  }
+}
+
+# guild abundance = sum of the taxon columns just added
+added_cols <- paste0(intersect(guild$members, taxa_names(ps_MTG)), "_abundance")
+sample_data(ps_MTG)$guild_abundance <- rowSums(
+  data.frame(sample_data(ps_MTG), check.names = FALSE)[, added_cols, drop = FALSE]
+)
+
+# carry each subject's split to all of its samples in ps
+meta_ps   <- data.frame(sample_data(ps_MTG), check.names = FALSE)
+split_id  <- meta$train_test[match(meta_ps$ID, meta$ID)]          # subject's split
+in_single <- meta_ps$Sample_ID %in% meta$Sample_ID                # the single-tp sample itself
+meta_ps$train_test <- ifelse(in_single, split_id, paste0("long_", split_id))
+meta_ps$train_test[is.na(split_id)] <- NA                         # subject not in single tp
+sample_data(ps_MTG) <- sample_data(meta_ps)
+
+table(meta_ps$train_test, useNA = "ifany")
+
+```
+
+
+Run Random Forest Models
+```{r}
+library(caret)          # method = "rf" uses the randomForest package
+library(VIM)            # kNN imputation, as in the reference script
+ 
+# kNN imputation of sample_data variables, done once before any model is run,
+# as in dantaslab/preclinAD_GutMicrobiomes (legacy): VIM::kNN with its defaults
+# (k = 5), all used samples imputed together, outcome included in the distance.
+# Every model then sees the same imputed values.
+#
+# ps        phyloseq object with a train_test column
+# vars      sample_data variables to impute; also the variables kNN uses to find
+#           neighbours (plus the outcome). Use the union of all model features.
+# use       which train_test groups to impute. long_test is left out by default
+#           because run_rf() never uses it.
+#
+# Returns ps with the imputed values written into sample_data, and a message
+# with per-variable counts.
+impute_ps <- function(ps, vars, outcome = "AD_Status", split_col = "train_test",
+                      use = c("train", "test", "long_train"), seed = 42) {
+  sd <- data.frame(sample_data(ps), check.names = FALSE)
+  not_found <- setdiff(c(vars, outcome, split_col), names(sd))
+  if (length(not_found)) stop("Not in sample_data: ", paste(not_found, collapse = ", "))
+ 
+  rows <- which(sd[[split_col]] %in% use)
+  rows <- rows[order(rownames(sd)[rows])]              # fixed order, independent of ps
+  stopifnot(!anyNA(sd[rows, outcome]))                 # the outcome is never imputed
+ 
+  n_na <- colSums(is.na(sd[rows, vars, drop = FALSE]))
+  if (!any(n_na > 0)) {
+    message("No missing values to impute")
+    return(ps)
+  }
+ 
+  set.seed(seed)                                       # kNN breaks categorical ties at random
+  imp <- VIM::kNN(data.frame(sd[rows, vars, drop = FALSE], .outcome = factor(sd[rows, outcome]),
+                             check.names = FALSE),
+                  imp_var = FALSE)
+  sd[rows, vars] <- imp[, seq_along(vars)]             # drop the outcome column again
+  sample_data(ps) <- sample_data(sd)
+ 
+  n_na <- n_na[n_na > 0]
+  message(sprintf("Imputed %d values across %d samples (kNN, k = 5, joint) -- %s",
+                  sum(n_na), length(rows),
+                  paste(sprintf("%s: %d", names(n_na), n_na), collapse = ", ")))
+  ps
+}
+ 
+
+run_rf <- function(ps, features, model_name, positive, use_long = FALSE,
+                   outcome = "AD_Status", id_col = "ID", split_col = "train_test",
+                   n_iter = 100, p = 0.8, seed = 42, sampling = "down", n_cores = 8,
+                   cv_folds = 10) {
+ 
+  sd  <- data.frame(sample_data(ps), check.names = FALSE)
+  otu <- as(otu_table(ps), "matrix")
+  if (taxa_are_rows(ps)) otu <- t(otu)
+ 
+  cols_missing <- setdiff(c(outcome, id_col, split_col), names(sd))
+  if (length(cols_missing)) stop("Column(s) not in sample_data: ", paste(cols_missing, collapse = ", "),
+                                 " (check outcome / id_col / split_col)")
+ 
+  # predictors: sample_data columns first, anything else from the taxa table
+  not_found <- setdiff(features, c(names(sd), colnames(otu)))
+  if (length(not_found)) stop("Not in sample_data or taxa: ", paste(not_found, collapse = ", "))
+  from_sd <- intersect(features, names(sd))
+  X <- data.frame(sd[, from_sd, drop = FALSE],
+                  otu[rownames(sd), setdiff(features, from_sd), drop = FALSE],
+                  check.names = FALSE)[, features, drop = FALSE]
+  X[] <- lapply(X, function(v) if (is.character(v)) factor(v) else v)   # text -> categorical
+ 
+  # fixed sample order, so results don't depend on how ps happens to be sorted
+  ord   <- order(rownames(sd))
+  X     <- X[ord, , drop = FALSE]
+  y     <- factor(sd[ord, outcome])
+  ids   <- as.character(sd[ord, id_col])
+  split <- sd[ord, split_col]
+  stopifnot(nlevels(y) == 2, positive %in% levels(y))
+ 
+  pool <- which(split %in% c("train", if (use_long) "long_train"))
+  test <- which(split %in% "test")
+  stopifnot(!any(ids[test] %in% ids[pool]),            # no subject in both sets
+            !anyNA(y[c(pool, test)]))                  # the outcome is never imputed
+ 
+  na_feat <- colSums(is.na(X[c(pool, test), , drop = FALSE]))
+  if (any(na_feat > 0)) {
+    stop("Missing values in: ", paste(names(na_feat)[na_feat > 0], collapse = ", "),
+         " -- run impute_ps() first")
+  }
+ 
+  ctrl <- trainControl(method = "cv", number = cv_folds, allowParallel = FALSE,
+                       sampling = sampling)
+ 
+  # iterations run in parallel when n_cores > 1 (forked processes; macOS/Linux).
+  # Each iteration sets its own seed, so results are identical for any n_cores.
+  res <- parallel::mclapply(seq_len(n_iter), mc.cores = n_cores, FUN = function(i) {
+    set.seed(seed + i)
+ 
+    # one sample per subject (only matters when long_train samples are included)
+    tr <- unlist(lapply(split(pool, ids[pool]), function(k) k[sample.int(length(k), 1)]))
+    tr <- tr[createDataPartition(y[tr], p = p, list = FALSE)]
+    stopifnot(!anyDuplicated(ids[tr]))
+ 
+    fit  <- train(x = X[tr, , drop = FALSE], y = y[tr], method = "rf",
+                  metric = "Accuracy", trControl = ctrl)
+    pred <- predict(fit, X[test, , drop = FALSE])
+ 
+    truth <- y[test] == positive
+    called <- pred == positive
+    tp <- sum(called & truth);  tn <- sum(!called & !truth)
+    fp <- sum(called & !truth); fn <- sum(!called & truth)
+ 
+    # = varImp(fit, scale = FALSE), but keeps feature names when there is only one
+    imp <- randomForest::importance(fit$finalModel)[features, "MeanDecreaseGini"]
+ 
+    list(
+      metrics = data.frame(model     = model_name,
+                           iteration = i,
+                           accuracy  = (tp + tn) / length(test),
+                           f1        = 2 * tp / (2 * tp + fp + fn),
+                           sens      = tp / (tp + fn),
+                           spec      = tn / (tn + fp),
+                           mcc       = (tp * tn - fp * fn) /
+                                       sqrt(as.numeric(tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))),
+      importance = data.frame(model = model_name, iteration = i,
+                              t(setNames(imp, features)),
+                              check.names = FALSE)
+    )
+  })
+  failed <- vapply(res, inherits, logical(1), "try-error")   # errors in workers come back as values
+  if (any(failed)) stop("Iteration ", which(failed)[1], " failed: ", res[[which(failed)[1]]])
+  list(metrics    = do.call(rbind, lapply(res, `[[`, "metrics")),
+       importance = do.call(rbind, lapply(res, `[[`, "importance")))
+}
+features <- c("Years_Education", "Age", "Diabetes", "Hypertension", "Sex", "BMI",
+              "apoe4_carriage", "log2_Calp", "log2_NGAL",  "guild_abundance",
+              "hippocampus_vol_div_icv",
+              "LOAD_CorticalSignature_Thickness", "mr_vol_tot_wmhypointensities")
+
+ps_MTG_imputed <- impute_ps(ps_MTG, vars=features)
+
+run_rf <- function(ps, features, model_name, positive, use_long = FALSE,
+                   outcome = "AD_Status", id_col = "ID", split_col = "train_test",
+                   n_iter = 100, p = 0.8, seed = 42, sampling = "down", n_cores = 8,
+                   cv_folds = 10) {
+ 
+  sd  <- data.frame(sample_data(ps), check.names = FALSE)
+  otu <- as(otu_table(ps), "matrix")
+  if (taxa_are_rows(ps)) otu <- t(otu)
+ 
+  cols_missing <- setdiff(c(outcome, id_col, split_col), names(sd))
+  if (length(cols_missing)) stop("Column(s) not in sample_data: ", paste(cols_missing, collapse = ", "),
+                                 " (check outcome / id_col / split_col)")
+ 
+  # predictors: sample_data columns first, anything else from the taxa table
+  not_found <- setdiff(features, c(names(sd), colnames(otu)))
+  if (length(not_found)) stop("Not in sample_data or taxa: ", paste(not_found, collapse = ", "))
+  from_sd <- intersect(features, names(sd))
+  X <- data.frame(sd[, from_sd, drop = FALSE],
+                  otu[rownames(sd), setdiff(features, from_sd), drop = FALSE],
+                  check.names = FALSE)[, features, drop = FALSE]
+  X[] <- lapply(X, function(v) if (is.character(v)) factor(v) else v)   # text -> categorical
+ 
+  # fixed sample order, so results don't depend on how ps happens to be sorted
+  ord   <- order(rownames(sd))
+  X     <- X[ord, , drop = FALSE]
+  y     <- factor(sd[ord, outcome])
+  ids   <- as.character(sd[ord, id_col])
+  split <- sd[ord, split_col]
+  stopifnot(nlevels(y) == 2, positive %in% levels(y))
+ 
+  pool <- which(split %in% c("train", if (use_long) "long_train"))
+  test <- which(split %in% "test")
+  stopifnot(!any(ids[test] %in% ids[pool]),            # no subject in both sets
+            !anyNA(y[c(pool, test)]))                  # the outcome is never imputed
+ 
+  na_feat <- colSums(is.na(X[c(pool, test), , drop = FALSE]))
+  if (any(na_feat > 0)) {
+    stop("Missing values in: ", paste(names(na_feat)[na_feat > 0], collapse = ", "),
+         " -- run impute_ps() first")
+  }
+ 
+  ctrl <- trainControl(method = "cv", number = cv_folds, allowParallel = FALSE,
+                       sampling = sampling)
+ 
+  # iterations run in parallel when n_cores > 1 (forked processes; macOS/Linux).
+  # Each iteration sets its own seed, so results are identical for any n_cores.
+  res <- parallel::mclapply(seq_len(n_iter), mc.cores = n_cores, FUN = function(i) {
+    set.seed(seed + i)
+ 
+    # one sample per subject (only matters when long_train samples are included)
+    tr <- unlist(lapply(split(pool, ids[pool]), function(k) k[sample.int(length(k), 1)]))
+    tr <- tr[createDataPartition(y[tr], p = p, list = FALSE)]
+    stopifnot(!anyDuplicated(ids[tr]))
+ 
+    fit  <- train(x = X[tr, , drop = FALSE], y = y[tr], method = "rf",
+                  metric = "Accuracy", trControl = ctrl)
+    pred <- predict(fit, X[test, , drop = FALSE])
+ 
+    truth <- y[test] == positive
+    called <- pred == positive
+    tp <- sum(called & truth);  tn <- sum(!called & !truth)
+    fp <- sum(called & !truth); fn <- sum(!called & truth)
+ 
+    # = varImp(fit, scale = FALSE), but keeps feature names when there is only one
+    imp <- randomForest::importance(fit$finalModel)[features, "MeanDecreaseGini"]
+ 
+    list(
+      metrics = data.frame(model     = model_name,
+                           iteration = i,
+                           accuracy  = (tp + tn) / length(test),
+                           f1        = 2 * tp / (2 * tp + fp + fn),
+                           sens      = tp / (tp + fn),
+                           spec      = tn / (tn + fp),
+                           mcc       = (tp * tn - fp * fn) /
+                                       sqrt(as.numeric(tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))),
+      importance = data.frame(model = model_name, iteration = i,
+                              t(setNames(imp, features)),
+                              check.names = FALSE)
+    )
+  })
+  failed <- vapply(res, inherits, logical(1), "try-error")   # errors in workers come back as values
+  if (any(failed)) stop("Iteration ", which(failed)[1], " failed: ", res[[which(failed)[1]]])
+  list(metrics    = do.call(rbind, lapply(res, `[[`, "metrics")),
+       importance = do.call(rbind, lapply(res, `[[`, "importance")))
+}
+
+compare_gut <- function(ps, baseline, gut, name, positive,
+                        out_dir = "~/Downloads",
+                        feature_labels = c(apoe4_carriage  = "APOE4 carriage",
+                                           guild_abundance = "Guild Abundance",
+                                           log2_NGAL       = "NGAL",
+                                           log2_Calp       = "Calprotectin",
+                                           Years_Education = "Years of Education"),
+                        vars = c(Accuracy = "accuracy", Sensitivity = "sens",
+                                 Specificity = "spec"),
+                        p_show = 0.1, palette = "Glacier", show = TRUE, ...) {
+ 
+  gut <- setdiff(gut, baseline)
+  if (!length(gut)) stop("`gut` has no features that aren't already in `baseline`")
+  slug <- gsub("^_|_$", "", gsub("[^A-Za-z0-9]+", "_", name))   # safe for files / model names
+  if (!is.null(out_dir)) dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+ 
+  designs <- c(CS = "Cross-sectional", long = "Longitudinal")
+  sets    <- list(gut = c(baseline, gut), nogut = baseline)
+  set_lab <- c(gut = "Gut", nogut = "No gut")
+ 
+  # ---- train the four models -------------------------------------------------
+  # order: gut CS, gut long, nogut CS, nogut long
+  grid <- expand.grid(design = names(designs), set = names(sets), stringsAsFactors = FALSE)
+  grid$model <- paste0(slug, "_", grid$set, "_rf_", grid$design)
+  models <- setNames(lapply(seq_len(nrow(grid)), function(j) {
+    message("Training ", grid$model[j])
+    run_rf(ps, sets[[grid$set[j]]], model_name = grid$model[j], positive = positive,
+           use_long = grid$design[j] == "long", ...)
+  }), grid$model)
+ 
+  metrics <- do.call(rbind, lapply(models, `[[`, "metrics"))
+  rownames(metrics) <- NULL
+  metrics$design <- grid$design[match(metrics$model, grid$model)]
+  metrics$set    <- grid$set[match(metrics$model, grid$model)]
+ 
+  summ <- aggregate(cbind(accuracy, f1, sens, spec, mcc) ~ model, metrics,
+                    function(x) mean(x, na.rm = TRUE), na.action = na.pass)
+  summ <- summ[match(grid$model, summ$model), ]
+  rownames(summ) <- NULL
+ 
+  # ---- box plots + ANOVA / Tukey, one figure per design ----------------------
+  fills <- as.character(unclass(natparks.pals(palette, n = 2, type = "discrete")))
+  plots <- list(); anova_l <- list(); tukey_l <- list()
+ 
+  for (d in names(designs)) {
+    dd   <- metrics[metrics$design == d, ]
+    long <- do.call(rbind, lapply(names(vars), function(v)
+      data.frame(group = set_lab[dd$set], metric = v, value = dd[[vars[[v]]]])))
+    long$group  <- factor(long$group, levels = set_lab)
+    long$metric <- factor(long$metric, levels = names(vars))
+ 
+    st <- do.call(rbind, lapply(levels(long$metric), function(m) {
+      fit <- aov(value ~ group, data = long[long$metric == m, ])
+      tk  <- TukeyHSD(fit)$group[1, ]                     # the single pair, "No gut-Gut"
+      data.frame(design = d, metric = m,
+                 p_anova = summary(fit)[[1]][["Pr(>F)"]][1],
+                 group1 = set_lab[["gut"]], group2 = set_lab[["nogut"]],
+                 diff = tk[["diff"]], ci_low = tk[["lwr"]], ci_high = tk[["upr"]],
+                 p_tukey = tk[["p adj"]])
+    }))
+    st$stars <- as.character(cut(st$p_tukey, c(-Inf, 0.001, 0.01, 0.05, 0.1, Inf),
+                                 labels = c("***", "**", "*", ".", "ns"), right = FALSE))
+    anova_l[[d]] <- data.frame(design = d, metric = st$metric, p = st$p_anova)
+    tukey_l[[d]] <- st[, c("design", "metric", "group1", "group2", "diff",
+                           "ci_low", "ci_high", "p_tukey", "stars")]
+ 
+    # bracket when Tukey p < p_show; y-axis follows the data, spacing scales with it
+    br   <- st[!is.na(st$p_tukey) & st$p_tukey < p_show, ]
+    br$metric <- factor(br$metric, levels = levels(long$metric))
+    br$x1 <- rep(1, nrow(br)); br$x2 <- rep(2, nrow(br))
+    rng  <- diff(range(long$value, na.rm = TRUE))
+    if (!is.finite(rng) || rng == 0) rng <- 0.1
+    step <- 0.1 * rng
+    top  <- tapply(long$value, long$metric, max, na.rm = TRUE)
+    br$y <- top[as.character(br$metric)] + step
+    ylims <- c(min(long$value, na.rm = TRUE) - 0.05 * rng,
+               max(c(long$value, br$y), na.rm = TRUE) + step * 1.6)   # room for the stars
+ 
+    p <- ggplot(long, aes(group, value, fill = group)) +
+      geom_boxplot(colour = "grey25", linewidth = 0.6, width = 0.75,
+                   outlier.colour = "grey20", outlier.size = 2.2) +
+      geom_segment(data = br, aes(x = x1, xend = x2, y = y, yend = y),
+                   inherit.aes = FALSE, linewidth = 0.6) +
+      geom_segment(data = br, aes(x = x1, xend = x1, y = y, yend = y - step / 6),
+                   inherit.aes = FALSE, linewidth = 0.6) +
+      geom_segment(data = br, aes(x = x2, xend = x2, y = y, yend = y - step / 6),
+                   inherit.aes = FALSE, linewidth = 0.6) +
+      geom_text(data = br, aes(x = (x1 + x2) / 2, y = y, label = stars),
+                inherit.aes = FALSE, size = 5, vjust = 0.35) +
+      facet_wrap(~ metric, ncol = length(vars)) +
+      scale_fill_manual(values = fills) +
+      scale_y_continuous(limits = ylims, expand = expansion(mult = 0.01)) +
+      labs(x = NULL, y = "Metric Value", title = paste0(name, ": ", designs[[d]])) +
+      theme_classic(base_size = 14) +
+      theme(legend.position  = "none",
+            panel.border     = element_rect(fill = NA, colour = "black", linewidth = 1),
+            axis.line        = element_blank(),
+            strip.background = element_rect(fill = "grey85", colour = "black", linewidth = 0.6),
+            strip.text       = element_text(size = 13, colour = "black"),
+            axis.text        = element_text(colour = "grey25", size = 11),
+            axis.text.x      = element_text(angle = 45, hjust = 1, vjust = 1, size = 12),
+            axis.title.y     = element_text(size = 14),
+            plot.title       = element_text(face = "bold", hjust = 0.5),
+            panel.spacing    = unit(0.8, "lines"))
+ 
+    plots[[d]] <- p
+    if (!is.null(out_dir))
+      ggsave(file.path(out_dir, paste0(slug, "_", d, ".pdf")), p,
+             width = 9, height = 4.5, dpi = 900)
+  }
+  anova <- do.call(rbind, anova_l); tukey <- do.call(rbind, tukey_l)
+  rownames(anova) <- rownames(tukey) <- NULL
+ 
+  # ---- feature importance, all four models -----------------------------------
+  # long format: one row per model x iteration x feature
+  imp_long <- do.call(rbind, lapply(models, function(m) {
+    imp   <- m$importance
+    feats <- setdiff(names(imp), c("model", "iteration"))
+    data.frame(model      = imp$model[1],
+               feature    = rep(feats, each = nrow(imp)),
+               importance = unlist(imp[feats], use.names = FALSE))
+  }))
+ 
+  # mean and SD over iterations (namespaced, so objects named `sd`/`mean` can't mask them)
+  imp_sum <- merge(
+    aggregate(importance ~ model + feature, imp_long, base::mean),
+    setNames(aggregate(importance ~ model + feature, imp_long, stats::sd),
+             c("model", "feature", "sd"))
+  )
+ 
+  # sort within each model: a model-specific key keeps each panel's order independent
+  imp_sum     <- imp_sum[order(imp_sum$model, imp_sum$importance), ]
+  imp_sum$key <- factor(paste(imp_sum$model, imp_sum$feature, sep = "___"),
+                        levels = paste(imp_sum$model, imp_sum$feature, sep = "___"))
+ 
+  model_labels  <- setNames(paste0(set_lab[grid$set], " features (", designs[grid$design], ")"),
+                            grid$model)
+  imp_sum$panel <- factor(model_labels[imp_sum$model], levels = model_labels)
+  y_labels <- setNames(ifelse(imp_sum$feature %in% names(feature_labels),
+                              feature_labels[imp_sum$feature], imp_sum$feature),
+                       as.character(imp_sum$key))
+ 
+  p_imp <- ggplot(imp_sum, aes(x = importance, y = key)) +
+    geom_col(fill = "steelblue", width = 0.7) +
+    geom_errorbar(aes(xmin = pmax(importance - sd, 0),   # Gini importance can't go below 0
+                      xmax = importance + sd), width = 0.3) +
+    scale_y_discrete(labels = y_labels) +
+    scale_x_continuous(expand = expansion(mult = c(0, 0.05))) +
+    facet_wrap(~ panel, scales = "free_y", ncol = 2) +
+    labs(x = expression("Mean decrease in Gini (mean" %+-% " SD across iterations)"), y = NULL,
+         title = paste0(name, ": random forest feature importance")) +
+    theme_bw() +
+    theme(panel.grid.major.y = element_blank())
+ 
+  plots$importance <- p_imp
+  if (!is.null(out_dir))
+    ggsave(file.path(out_dir, paste0(slug, "_rf_feature_importance.pdf")), p_imp,
+           width = 10, height = 7, dpi = 900)
+ 
+  # the numbers behind the plot, most important first within each model
+  imp_tab <- imp_sum[order(imp_sum$model, -imp_sum$importance),
+                     c("model", "feature", "importance", "sd")]
+  rownames(imp_tab) <- NULL
+ 
+  out <- list(models = models, metrics = metrics, summary = summ,
+              anova = anova, tukey = tukey, importance = imp_tab, plots = plots)
+ 
+  # keep results on disk before anything is displayed, so nothing after this can lose them
+  if (!is.null(out_dir)) saveRDS(out, file.path(out_dir, paste0(slug, "_results.rds")))
+ 
+  # display last, and only warn on failure: RStudio's inline notebook output can fail
+  # ("unable to open file ... _rs_chunk_plot", "gzfile ... cannot open the connection")
+  if (show) tryCatch({
+    for (d in names(designs)) {
+      print(plots[[d]])
+      print(anova[anova$design == d, ])
+      print(tukey[tukey$design == d, ])
+    }
+    print(p_imp)
+  }, error = function(e) warning(
+    "Couldn't display results here (", conditionMessage(e), "). Everything is in the ",
+    "returned list; show it from a new chunk, e.g. x$plots$CS", call. = FALSE))
+ 
+  invisible(out)
+}
+
+```
+
+Figures 4B-E: ML Performance Metric Comparisons & Importance
+```{r}
+clinical_genetics <- compare_gut(
+   ps_MTG_imputed,
+   baseline = c("Years_Education", "Diabetes", "Age", "Hypertension",
+                "Sex", "BMI", "apoe4_carriage"),
+   gut      = c("log2_NGAL", "log2_Calp", "guild_abundance"),
+   name     = "Clinical_genetics",
+   positive = "Preclinical")
+cg_metrics <- clinical_genetics$metrics
+cg_summary <- clinical_genetics$summary
+cg_anova <- clinical_genetics$anova
+cg_tukey <- clinical_genetics$tukey
+cg_importance <- clinical_genetics$importance
+write.csv(cg_anova, "261028_ML_cg_anova.csv", row.names=F)
+write.csv(cg_tukey, "261028_ML_cg_tukey.csv", row.names=F)
+write.csv(cg_summary, "261028_ML_cg_summary.csv", row.names=F)
+write.csv(cg_importance, "261028_ML_cg_importance.csv", row.names=F)
+write.csv(cg_metrics, "261028_ML_cg_metrics.csv", row.names=F)
+
+p_cg_cs <- clinical_genetics$plots$CS
+p_cg_long <- clinical_genetics$plots$long
+p_cg_import <- clinical_genetics$plots$importance
+ggsave("261028_ML_cg_cs.pdf", plot = p_cg_cs,bg = "transparent", width = 6, height = 4)
+ggsave("261028_ML_cg_long.pdf", plot = p_cg_long,bg = "transparent", width = 6, height = 4)
+ggsave("261028_MLcg_importance.pdf", plot = p_cg_import,bg = "transparent", width = 9, height = 5)
+
+## Improvements observed
+neurodegeneration_cg <- compare_gut(
+   ps_MTG_imputed,
+   baseline = c("Years_Education", "Diabetes", "Age", "Hypertension",
+                "Sex", "BMI", "apoe4_carriage", "hippocampus_vol_div_icv",
+              "LOAD_CorticalSignature_Thickness", "mr_vol_tot_wmhypointensities"),
+   gut      = c("log2_NGAL", "log2_Calp", "guild_abundance" ),
+   name     = "Neuro",
+   positive = "Preclinical")
+neuro_cg_metrics <- neurodegeneration_cg$metrics
+neuro_cg_summary <- neurodegeneration_cg$summary
+neuro_cg_anova <- neurodegeneration_cg$anova
+neuro_cg_tukey <- neurodegeneration_cg$tukey
+neuro_cg_importance <- neurodegeneration_cg$importance
+write.csv(neuro_cg_anova, "261028_ML_neuro_cg_anova.csv", row.names=F)
+write.csv(neuro_cg_tukey, "261028_ML_neuro_cg_tukey.csv", row.names=F)
+write.csv(neuro_cg_summary, "261028_ML_neuro_cg_summary.csv", row.names=F)
+write.csv(neuro_cg_importance, "261028_ML_neuro_cg_importance.csv", row.names=F)
+write.csv(neuro_cg_metrics, "261028_ML_neuro_cg_metrics.csv", row.names=F)
+
+p_neuro_cg_cs <- neurodegeneration_cg$plots$CS
+p_neuro_cg_long <- neurodegeneration_cg$plots$long
+p_neuro_cg_import <- neurodegeneration_cg$plots$importance
+ggsave("261028_ML_neuro_cg_cs.pdf", plot = p_neuro_cg_cs,bg = "transparent", width = 6, height = 4)
+ggsave("261028_ML_neuro_cg_long.pdf", plot = p_neuro_cg_long,bg = "transparent", width = 6, height = 4)
+ggsave("261028_ML_neuro_cg_importance.pdf", plot = p_neuro_cg_import,bg = "transparent", width = 9, height = 5)
+
+
+```
+
+
+Plot inclusion matrix: Figure 4A
+```{r}
+########################### Plot model feature details ################################
+covariates <- c("Age", "Sex", "Education (years)", "BMI", "Hypertension", "Diabetes", "APOE e4", "WMH volume", "Hippocampus volume","Cortical signature","Calprotectin","NGAL","Guild abundance")
+
+models <- c("CG", "CG + Gut", "CG_neuro", "CG_neuro + Gut")
+
+matrix <- read_excel("~/Library/CloudStorage/Box-Box/2026_JianMark_ADGutOmics2/NatAging_Submission/Figures/Figure4/261028_ML_model_var_inclusion_matrix.xlsx")
+
+# Define x- and y-axis model order
+y_order <- covariates
+x_order <- models
+
+# Define covariate variable colors
+cov_colors <- c(
+  rep("black", 6),         # demographic and clinical covariates
+  rep("#6B7F7F", 1),        # Genetic risk factors
+  rep("#7F4B89", 3),        # Neurodegeneration and injury
+  rep("#CB7223", 2),        # Stool inflammation
+  rep("#289A84", 1)       # Selected taxa
+)
+names(cov_colors) <- y_order
+
+# Turn labels into HTML with color
+y_labels_colored <- paste0(
+  "<span style='color:", cov_colors, ";'><b>", y_order, "</b></span>"
+)
+names(y_labels_colored) <- y_order
+
+# Covert to long format for plotting
+df_long <- matrix %>%
+  mutate(Model = factor(Model, levels = x_order)) %>%
+  pivot_longer(
+    cols = -Model,
+    names_to = "Covariate",
+    values_to = "Included"
+  ) %>%
+  mutate(
+    Covariate = factor(Covariate, levels = y_order),
+    Included = as.numeric(Included)
+  )
+library(ggtext)
+
+## Create separator positions
+# Horizontal lines (between covariates)
+h_lines <- seq(0.5, length(y_order) + 0.5, 1)
+# Vertical lines (between models)
+v_lines <- seq(0.5, length(x_order) + 0.5, 1)
+
+p_incl <- ggplot(df_long, aes(x = Model, y = Covariate, fill = Included)) +
+  geom_tile(color = NA) +
+  scale_fill_gradient(low = "white", high = "#bfc7d6") +  
+  scale_x_discrete(position = "bottom") +
+  scale_y_discrete(labels = y_labels_colored) +
+  coord_equal() +
+  theme_void(base_size = 13) +
+  theme(
+    axis.text.x.bottom = element_text(angle = 90, hjust = 1, vjust = 0.6,
+                               color = "black", face = "bold", size = 12),
+    axis.text.y = element_markdown(size = 9),
+    panel.grid = element_blank(),
+    legend.position = "none",
+    axis.title = element_blank(),
+    plot.margin = margin(10, 10, 10, 10)
+  ) +
+  geom_hline(yintercept = h_lines, color = "black", linewidth = 1) + 
+  geom_vline(xintercept = v_lines, color = "black", linewidth = 1)
+
+ggsave(filename="261028_ML_CS_model_inclusion_variables.pdf", plot = p_incl, width = 3, height = 5)
+```
+
+
+Save final supplementary table 1
+```{r}
+ps_mtg_single_tp_meta <- data.frame(ps_mtg_single_tp_meta)
+write.csv(ps_mtg_single_tp_meta, "261123_single_tp_meta.csv", row.names = F)
+
+want_columns <- ps_mtg_single_tp_meta %>% select(Sample_ID, Tax.PCoA1, Tax.PCoA2, Tax_Richness,Tax_Shannon,Tax_Simpson,	plasma_log_LPS,	plasma_log_CRP)
+
+supptable1 <- merge(ps_MTG_meta, want_columns, by = "Sample_ID", all.x = T)
+
+```
+

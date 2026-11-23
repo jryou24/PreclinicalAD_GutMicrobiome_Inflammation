@@ -1,0 +1,680 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+
+```{r}
+library(ggplot2)
+library(ggpubr)
+library(dplyr)
+library(tidyr)
+library(emmeans)
+library(multcompView)
+library(purrr)
+library(stringr)
+library(NatParksPalettes)
+library(readxl)
+library(tidytext)
+library(readr)
+un_anova_tukey <- function(df, feature_col, metrics) {
+  feature_col <- rlang::ensym(feature_col)
+
+  # Convert feature column to factor
+  df <- df %>% mutate(!!feature_col := as.factor(!!feature_col))
+
+  # Loop over each metric
+  results <- map_df(metrics, function(metric) {
+    # Construct formula like: accuracy_score ~ feature_set
+    formula <- as.formula(paste0(metric, " ~ ", rlang::as_label(feature_col)))
+
+    # Run ANOVA
+    aov_model <- aov(formula, data = df)
+    anova_p <- summary(aov_model)[[1]][["Pr(>F)"]][1]
+
+    # Run Tukey HSD posthoc
+    tukey <- TukeyHSD(aov_model)
+    tukey_df <- as.data.frame(tukey[[1]])
+    tukey_df$comparison <- rownames(tukey_df)
+
+    # Add columns to identify metric
+    tukey_df <- tukey_df %>%
+      mutate(
+        metric = metric,
+        anova_p = anova_p
+      ) %>%
+      select(metric, anova_p, comparison, everything())
+    
+    return(tukey_df)
+  })
+
+  return(results)
+}
+
+```
+
+```{r}
+ml_df <- read.csv("~/Documents/GitHub/PreclinicalAD_GutMicrobiome-Inflammation/R/Data/ML/combined_restarted_kernel_notau.csv") 
+
+tukey_CG <- ml_df %>%  filter(str_detect(feature_set, "clinical_")) %>% un_anova_tukey(.,  feature_col = feature_set,
+  metrics = c("accuracy_score", "sensitivity", "specificity")) 
+write.csv(tukey_CG, "~/Documents/GitHub/AD_longitudinal/outputs/260331/260331_ML_CS_preds_CG_models_tukey_results.csv", row.names = F)
+
+tukey_AD <- ml_df %>% filter(str_detect(feature_set, "AD_")) %>% un_anova_tukey(.,  feature_col = feature_set,
+  metrics = c("accuracy_score", "sensitivity", "specificity")) 
+write.csv(tukey_AD, "~/Documents/GitHub/AD_longitudinal/outputs/260331/260331_ML_CS_preds_AD_models_tukey_results.csv", row.names = F)
+
+### 1. Create AD model panel
+df_AD <- ml_df %>% 
+  filter(str_detect(feature_set, "AD_")) %>%
+  pivot_longer(
+    cols = c(sensitivity, specificity, accuracy_score),
+    names_to = "metric",
+    values_to = "value"
+  ) %>% 
+  mutate(
+    Model = case_when(
+      feature_set == "AD_base" ~ "AD",
+      feature_set == "AD_guild" ~ "AD + I + Guild",
+      feature_set == "AD_guild_split" ~ "AD + I + Guild Split",
+      feature_set == "clinical_base" ~ "CG",
+      feature_set == "clinical_guild" ~ "CG + I +Guild",
+      feature_set == "clinical_guild_split" ~ "CG + I +Guild Split"
+    )
+  )
+write.csv(df_AD, "~/Documents/GitHub/AD_longitudinal/outputs/260331/260331_cross-sectional_AD_ML_models_performance_metrics.csv", row.names = F)
+  
+### 2. Now compute y.max AFTER df_long exists
+y_max_AD <- df_AD %>%
+  group_by(metric) %>%
+  summarise(y.max = max(value, na.rm = TRUE), .groups = "drop")
+
+### 3. Add significance annotation info
+y_pos_multiplier = 1.0
+y_spacing = 0.01
+
+sign_AD_fig <- tukey_AD %>%
+  separate(comparison, into = c("model1", "model2"), sep = "-") %>%
+  mutate(
+    group1 = case_match(model1,
+      "AD_base" ~ "AD",
+      "AD_guild" ~ "AD + I + Guild",
+      "AD_guild_split" ~ "AD + I + Guild Split",
+      "clinical_base" ~ "CG",
+      "clinical_guild" ~ "CG + I +Guild",
+      "clinical_guild_split" ~ "CG + I +Guild Split"
+    ),
+    group2 = case_match(model2,
+      "AD_base" ~ "AD",
+      "AD_guild" ~ "AD + I + Guild",
+      "AD_guild_split" ~ "AD + I + Guild Split",
+      "clinical_base" ~ "CG",
+      "clinical_guild" ~ "CG + I +Guild",
+      "clinical_guild_split" ~ "CG + I +Guild Split"
+    ),
+    Model = group1
+  ) %>%
+  left_join(y_max_AD, by = "metric") %>%
+  group_by(metric) %>%
+  mutate(
+    y.position = y.max * (y_pos_multiplier + y_spacing * row_number()),
+    p_adj_sign = case_when(
+      `p adj` <= 0.001 ~ "***",
+      `p adj` <= 0.01  ~ "**",
+      `p adj` <= 0.05  ~ "*",
+      TRUE ~ "ns"
+    )
+  ) %>%
+  ungroup()
+
+## Rename "p adj" to "p.adj"
+sign_AD_fig <- sign_AD_fig %>% dplyr::rename(p.adj = "p adj")
+
+### 4. Plot
+p_AD <- ggplot(df_AD, aes(x = Model, y = value, fill = Model)) +
+  geom_boxplot() +
+  #geom_jitter(width = 0.1) +
+  scale_fill_manual(values=natparks.pals("CapitolReef")) +
+  facet_wrap(~ metric, ncol=1) +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.25))) +  ## Add 25% extra space above the max value in each facet
+  labs(x = "",
+    y = "Metric Value",
+    title = ""
+  ) +  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+        axis.text.x = element_text(size = 12, angle = 45, hjust = 1, vjust = 1),
+        axis.text.y = element_text(size = 9),
+        axis.title.y = element_text(size = 12),
+        legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(color = "black", fill = NA, linewidth = 0.8)) 
+
+sign_AD_fig_sig <- sign_AD_fig %>% filter(p.adj <= 0.05)
+p_AD_sign <- p_AD
+if (nrow(sign_AD_fig_sig) > 0) {
+  p_AD_sign <- p_AD_sign +
+    stat_pvalue_manual(
+      sign_AD_fig_sig,
+      label = "p_adj_sign",
+      y.position = "y.position",
+      xmin = "group1",
+      xmax = "group2",
+      bracket.size = 0.6,
+      tip.length = 0.01, size = 4,
+      step.increase = 0,
+      facet.y = "metric"
+    )
+}
+ggsave(filename="~/Documents/GitHub/AD_longitudinal/outputs/260331/260331_ML_CS_preds_AD_models_pvalue.pdf", plot = p_AD_sign, width = 3, height = 8)
+
+
+### 1. Create clinical model panel
+df_cg <- ml_df %>%  
+  filter(str_detect(feature_set, "clinical_")) %>%
+  pivot_longer(
+    cols = c(sensitivity, specificity, accuracy_score),
+    names_to = "metric",
+    values_to = "value"
+  ) %>% 
+  mutate(
+    Model = case_when(
+      feature_set == "clinical_base" ~ "CG",
+      feature_set == "clinical_guild" ~ "CG + I +Guild",
+      feature_set == "clinical_guild_split" ~ "CG + I +Guild Split"
+    )
+  )
+write.csv(df_cg, "~/Documents/GitHub/AD_longitudinal/outputs/260331/260331_cross-sectional_CG_ML_performance_metrics.csv", row.names = F)
+
+### 2. Now compute y.max AFTER df_long exists
+y_max_cg <- df_cg %>%
+  group_by(metric) %>%
+  summarise(y.max = max(value, na.rm = TRUE), .groups = "drop")
+
+### 3. Add significance annotation info
+y_pos_multiplier = 1.0
+y_spacing = 0.25
+
+sign_CG_fig <- tukey_CG %>%
+  separate(comparison, into = c("model1", "model2"), sep = "-") %>%
+  mutate(
+    group1 = recode(model1,
+      "clinical_base" = "CG",
+      "clinical_guild" = "CG + I +Guild",
+      "clinical_guild_split" = "CG + I +Guild Split"
+    ),
+    group2 = recode(model2,
+      "clinical_base" = "CG",
+      "clinical_guild" = "CG + I +Guild",
+      "clinical_guild_split" = "CG + I +Guild Split"
+    ),
+    Model = group1
+  ) %>%
+  left_join(y_max_cg, by = "metric") %>%
+  group_by(metric) %>%
+  mutate(
+    y.position = y.max * (y_pos_multiplier + y_spacing * row_number()),
+    p_adj_sign = case_when(
+      `p adj` <= 0.001 ~ "***",
+      `p adj` <= 0.01  ~ "**",
+      `p adj` <= 0.05  ~ "*",
+      TRUE ~ "ns"
+    )
+  ) %>%
+  ungroup()
+
+## Rename "p adj" to "p.adj"
+sign_CG_fig <- sign_CG_fig %>% dplyr::rename(p.adj = "p adj")
+
+
+### 4. Plot
+p <- ggplot(df_cg, aes(x = Model, y = value, fill = Model)) +
+  geom_boxplot() +
+  #geom_jitter(width = 0.1) +
+  scale_fill_manual(values=natparks.pals("Arches")) +
+  facet_wrap(~ metric, ncol=1) +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.25))) +  ## Add 25% extra space above the max value in each facet
+  labs(x = "",
+    y = "Metric Value",
+    title = ""
+  ) +  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+        axis.text.x = element_text(size = 12, angle = 45, hjust = 1, vjust = 1),
+        axis.text.y = element_text(size = 9),
+        axis.title.y = element_text(size = 12),
+        legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(color = "black", fill = NA, linewidth = 0.8)) 
+
+sign_CG_fig_sig <- sign_CG_fig %>% filter(p.adj <= 0.05)
+p_sign <- p
+if (nrow(sign_CG_fig_sig) > 0) {
+  p_sign <- p_sign +
+    stat_pvalue_manual(
+      sign_CG_fig_sig,
+      label = "p_adj_sign",
+      y.position = "y.position",
+      xmin = "group1",
+      xmax = "group2",
+      bracket.size = 0.6,
+      tip.length = 0.01, size = 4,
+      step.increase = 0,
+      facet.y = "metric"
+    )
+}
+ggsave(filename="~/Documents/GitHub/AD_longitudinal/outputs/260331/260331_ML_CS_preds_clinical_AD_pvalue.pdf", plot = p_sign, width = 3, height = 8)
+```
+
+Pseudo-Longitudinal ML 
+```{r}
+long_ml_df <- read.csv("~/Documents/GitHub/PreclinicalAD_GutMicrobiome-Inflammation/R/Data/ML/long_results_restarted_kernel_notau.csv") 
+
+tukey_CG_long <- long_ml_df %>%  filter(str_detect(feature_set, "clinical_")) %>% un_anova_tukey(.,  feature_col = feature_set,
+  metrics = c("Accuracy_Score", "Sensitivity", "Specificity")) 
+write.csv(tukey_CG_long, "~/Documents/GitHub/AD_longitudinal/outputs/260331/260331_ml_cs_train_long_train_cs_test_long_test_CG_models_tukey_results.csv", row.names = F)
+
+tukey_AD_long <- long_ml_df %>% filter(str_detect(feature_set, "AD_")) %>% un_anova_tukey(.,  feature_col = feature_set,
+  metrics = c("Accuracy_Score", "Sensitivity", "Specificity")) 
+write.csv(tukey_AD_long, "~/Documents/GitHub/AD_longitudinal/outputs/260331/260331_ml_cs_train_long_train_cs_test_long_test_AD_models_tukey_results.csv", row.names = F)
+
+### 1. Create AD model panel
+df_AD_long <- long_ml_df %>% 
+  filter(str_detect(feature_set, "AD_")) %>%
+  pivot_longer(
+    cols = c(Sensitivity, Specificity, Accuracy_Score),
+    names_to = "metric",
+    values_to = "value"
+  ) %>% 
+  mutate(
+    Model = case_when(
+      feature_set == "AD_base" ~ "AD",
+      feature_set == "AD_guild" ~ "AD + I + Guild",
+      feature_set == "AD_guild_split" ~ "AD + I + Guild Split",
+    )
+  )
+write.csv(df_AD_long, "~/Documents/GitHub/AD_longitudinal/outputs/260331/260331_ml_cs_train_long_train_cs_test_long_test_AD_ML_performance_metrics.csv", row.names = F)
+  
+### 2. Now compute y.max AFTER df_long exists
+y_max_AD <- df_AD_long %>%
+  group_by(metric) %>%
+  summarise(y.max = max(value, na.rm = TRUE), .groups = "drop")
+
+### 3. Add significance annotation info
+y_pos_multiplier = 1.0
+y_spacing = 0.01
+
+sign_AD_fig_long <- tukey_AD_long %>%
+  separate(comparison, into = c("model1", "model2"), sep = "-") %>%
+  mutate(
+    group1 = recode(model1,
+      "AD_base" = "AD",
+      "AD_guild" = "AD + I + Guild",
+      "AD_guild_split" = "AD + I + Guild Split",
+    ),
+    group2 = recode(model2,
+      "AD_base" = "AD",
+      "AD_guild" = "AD + I + Guild",
+      "AD_guild_split" = "AD + I + Guild Split",
+    ),
+    Model = group1
+  ) %>%
+  left_join(y_max_AD, by = "metric") %>%
+  group_by(metric) %>%
+  mutate(
+    y.position = y.max * (y_pos_multiplier + y_spacing * row_number()),
+    p_adj_sign = case_when(
+      `p adj` <= 0.001 ~ "***",
+      `p adj` <= 0.01  ~ "**",
+      `p adj` <= 0.05  ~ "*",
+      TRUE ~ "ns"
+    )
+  ) %>%
+  ungroup()
+
+## Rename "p adj" to "p.adj"
+sign_AD_fig_long <- sign_AD_fig_long %>% dplyr::rename(p.adj = "p adj")
+
+### 4. Plot
+p_AD_long <- ggplot(df_AD_long, aes(x = Model, y = value, fill = Model)) +
+  geom_boxplot() +
+  #geom_jitter(width = 0.1) +
+  scale_fill_manual(values=natparks.pals("CapitolReef")) +
+  facet_wrap(~ metric, ncol=1) +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.25))) +  ## Add 25% extra space above the max value in each facet
+  labs(x = "",
+    y = "Metric Value",
+    title = ""
+  ) +  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+        axis.text.x = element_text(size = 12, angle = 45, hjust = 1, vjust = 1),
+        axis.text.y = element_text(size = 9),
+        axis.title.y = element_text(size = 12),
+        legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(color = "black", fill = NA, linewidth = 0.8)) 
+
+sign_AD_fig_long_sig <- sign_AD_fig_long %>% filter(p.adj <= 0.05)
+p_AD_sign_long <- p_AD_long
+if (nrow(sign_AD_fig_long_sig) > 0) {
+  p_AD_sign_long <- p_AD_sign_long +
+    stat_pvalue_manual(
+      sign_AD_fig_long_sig,
+      label = "p_adj_sign",
+      y.position = "y.position",
+      xmin = "group1",
+      xmax = "group2",
+      bracket.size = 0.6,
+      tip.length = 0.01, size = 4,
+      step.increase = 0,
+      facet.y = "metric"
+    )
+}
+ggsave(filename="~/Documents/GitHub/AD_longitudinal/outputs/260331/260331_ml_cs_train_long_train_cs_test_AD_models_pvalue.pdf", plot = p_AD_sign_long, width = 3, height = 8)
+
+
+### 1. Create clinical model panel
+df_cg_long <- long_ml_df %>%  
+  filter(str_detect(feature_set, "clinical_")) %>%
+  pivot_longer(
+    cols = c(Sensitivity, Specificity, Accuracy_Score),
+    names_to = "metric",
+    values_to = "value"
+  ) %>% 
+  mutate(
+    Model = case_when(
+      feature_set == "clinical_base" ~ "CG",
+      feature_set == "clinical_guild" ~ "CG + I +Guild",
+      feature_set == "clinical_guild_split" ~ "CG + I +Guild Split"
+    )
+  )
+write.csv(df_cg_long, "~/Documents/GitHub/AD_longitudinal/outputs/260331/260331_ml_cs_train_long_train_cs_test_long_test_CG_ML_performance_metrics.csv", row.names = F)
+
+### 2. Now compute y.max AFTER df_long exists
+y_max_cg <- df_cg_long %>%
+  group_by(metric) %>%
+  summarise(y.max = max(value, na.rm = TRUE), .groups = "drop")
+
+### 3. Add significance annotation info
+y_pos_multiplier = 1.0
+y_spacing = 0.25
+
+sign_CG_fig_long <- tukey_CG_long %>%
+  separate(comparison, into = c("model1", "model2"), sep = "-") %>%
+  mutate(
+    group1 = recode(model1,
+      "clinical_base" = "CG",
+      "clinical_guild" = "CG + I +Guild",
+      "clinical_guild_split" = "CG + I +Guild Split"
+    ),
+    group2 = recode(model2,
+      "clinical_base" = "CG",
+      "clinical_guild" = "CG + I +Guild",
+      "clinical_guild_split" = "CG + I +Guild Split"
+    ),
+    Model = group1
+  ) %>%
+  left_join(y_max_cg, by = "metric") %>%
+  group_by(metric) %>%
+  mutate(
+    y.position = y.max * (y_pos_multiplier + y_spacing * row_number()),
+    p_adj_sign = case_when(
+      `p adj` <= 0.001 ~ "***",
+      `p adj` <= 0.01  ~ "**",
+      `p adj` <= 0.05  ~ "*",
+      TRUE ~ "ns"
+    )
+  ) %>%
+  ungroup()
+
+## Rename "p adj" to "p.adj"
+sign_CG_fig_long <- sign_CG_fig_long %>% dplyr::rename(p.adj = "p adj")
+
+### 4. Plot
+p_cg_long <- ggplot(df_cg_long, aes(x = Model, y = value, fill = Model)) +
+  geom_boxplot() +
+  #geom_jitter(width = 0.1) +
+  scale_fill_manual(values=natparks.pals("Arches")) +
+  facet_wrap(~ metric, ncol=1) +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.25))) +  ## Add 25% extra space above the max value in each facet
+  labs(x = "",
+    y = "Metric Value",
+    title = ""
+  ) +  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+        axis.text.x = element_text(size = 12, angle = 45, hjust = 1, vjust = 1),
+        axis.text.y = element_text(size = 9),
+        axis.title.y = element_text(size = 12),
+        legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(color = "black", fill = NA, linewidth = 0.8)) 
+
+sign_CG_fig_long_sig <- sign_CG_fig_long %>% filter(p.adj <= 0.05)
+p_cg_sign_long <- p_cg_long
+if (nrow(sign_CG_fig_long_sig) > 0) {
+  p_cg_sign_long <- p_cg_sign_long +
+    stat_pvalue_manual(
+      sign_CG_fig_long_sig,
+      label = "p_adj_sign",
+      y.position = "y.position",
+      xmin = "group1",
+      xmax = "group2",
+      bracket.size = 0.6,
+      tip.length = 0.01, size = 4,
+      step.increase = 0,
+      facet.y = "metric"
+    )
+}
+ggsave(filename="~/Documents/GitHub/AD_longitudinal/outputs/260331/260331_ml_cs_train_long_train_cs_test_long_test_CG_models_pvalue.pdf", plot = p_cg_sign_long, width = 3, height = 8)
+```
+
+Plot inclusion matrix
+```{r, eval=FALSE}
+########################### Plot model feature details ################################
+covariates <- c("Age", "Sex", "Education (years)", "BMI", "Hypertension", "Diabetes", "APOE e4", "WMH volume", "Hippocampus volume",
+                "Cortical signature", "PET tau", "CSF t-tau", "CSF p-tau-181","PET Amyloid","Calprotectin","Guild abundance", "Guild taxa abundance")
+models <- c(unique(df_cg_long$Model), unique(df_AD_long$Model))
+
+matrix <- read_excel("~/Library/CloudStorage/Box-Box/DantasLab/AD_microbiome/Paper2/Final_Figures/No_symptomatics/Figure 4/251113_ML_model_var_inclusion_matrix.xlsx")
+
+# Define x- and y-axis model order
+y_order <- covariates
+x_order <- c(unique(df_cg_long$Model), unique(df_AD_long$Model))
+
+# Define covariate variable colors
+cov_colors <- c(
+  rep("black", 6),         # demographic and clinical covariates
+  rep("#6B7F7F", 1),        # Genetic risk factors
+  rep("#CF932C", 3),        # Neurodegeneration and injury
+  rep("#7F4B89", 1),        # AD tau proteinopathy
+  rep("#B46DB3", 2),        # Phosphorylated and secreted AD tau
+  rep("#304F7D", 1),        # Amyloid 
+  rep("#CB7223", 1),
+  rep("#289A84", 2)       # Selected taxa
+)
+names(cov_colors) <- y_order
+
+# Turn labels into HTML with color
+y_labels_colored <- paste0(
+  "<span style='color:", cov_colors, ";'><b>", y_order, "</b></span>"
+)
+names(y_labels_colored) <- y_order
+
+# Covert to long format for plotting
+df_long <- matrix %>%
+  mutate(Model = factor(Model, levels = x_order)) %>%
+  pivot_longer(
+    cols = -Model,
+    names_to = "Covariate",
+    values_to = "Included"
+  ) %>%
+  mutate(
+    Covariate = factor(Covariate, levels = y_order),
+    Included = as.numeric(Included)
+  )
+library(ggtext)
+
+## Create separator positions
+# Horizontal lines (between covariates)
+h_lines <- seq(0.5, length(y_order) + 0.5, 1)
+# Vertical lines (between models)
+v_lines <- seq(0.5, length(x_order) + 0.5, 1)
+
+p_incl <- ggplot(df_long, aes(x = Model, y = Covariate, fill = Included)) +
+  geom_tile(color = NA) +
+  scale_fill_gradient(low = "white", high = "#bfc7d6") +  
+  scale_x_discrete(position = "bottom") +
+  scale_y_discrete(labels = y_labels_colored) +
+  coord_equal() +
+  theme_void(base_size = 13) +
+  theme(
+    axis.text.x.bottom = element_text(angle = 90, hjust = 1, vjust = 0.6,
+                               color = "black", face = "bold", size = 12),
+    axis.text.y = element_markdown(size = 9),
+    panel.grid = element_blank(),
+    legend.position = "none",
+    axis.title = element_blank(),
+    plot.margin = margin(10, 10, 10, 10)
+  ) +
+  geom_hline(yintercept = h_lines, color = "black", linewidth = 1) + 
+  geom_vline(xintercept = v_lines, color = "black", linewidth = 1)
+
+ggsave(filename="25117_ML_CS_model_inclusion_variables_v2.pdf", plot = p_incl, width = 3, height = 8)
+
+```
+
+```{r}
+feature_importance_df <- read.csv("~/Documents/GitHub/PreclinicalAD_GutMicrobiome-Inflammation/R/Data/ML/long_feature_importances.csv") %>%
+  select(-any_of("X")) %>%
+  rename(
+    Education = Years_Education,
+    `APOE4 Carriage` = apoe4_carriage,
+    Calprotectin = log2_Calp,
+    `Guild Abundance` = guild_abundance,
+    `Bacteroides cellulosilyticus` = k__Bacteria.p__Bacteroidetes.c__Bacteroidia.o__Bacteroidales.f__Bacteroidaceae.g__Bacteroides.s__Bacteroides_cellulosilyticus_abundance,
+    `Roseburia sp CAG 471` = k__Bacteria.p__Firmicutes.c__Clostridia.o__Clostridiales.f__Lachnospiraceae.g__Roseburia.s__Roseburia_sp_CAG_471_abundance,
+    `Roseburia hominis` = k__Bacteria.p__Firmicutes.c__Clostridia.o__Clostridiales.f__Lachnospiraceae.g__Roseburia.s__Roseburia_hominis_abundance,
+    `Hippocampus volume` = mr_vol_r_hippocampus,
+    `Cortical Signature` = LOAD_CorticalSignature_Thickness,
+    `WMH volume` = mr_vol_tot_wmhypointensities,
+    `PET Amyloid` = combined.centiloid,
+    `CSF t-tau` = LUMIPULSE_CSF_tTau,
+    `CSF p-tau-181` = LUMIPULSE_CSF_pTau,
+    `PET tau` = Tauopathy
+  )
+
+# Convert wide format to long format
+feature_importance_long <- feature_importance_df %>%
+  filter(!grepl("brain", feature_set, ignore.case = TRUE)) %>%  # Remove brain feature sets
+  pivot_longer(
+    cols = -c(seed, feature_set),
+    names_to = "feature_name",
+    values_to = "importance"
+  ) %>%
+  filter(!is.na(importance))
+
+# Calculate mean and SD importance for each feature within each feature_set
+feature_importance_summary <- feature_importance_long %>%
+  group_by(feature_set, feature_name) %>%
+  summarise(
+    mean_importance = mean(importance),
+    sd_importance = sd(importance),
+    .groups = "drop"
+  )
+
+# Create the plot with tidytext
+feature_importance_plot <- ggplot(feature_importance_summary, 
+       aes(x = reorder_within(feature_name, mean_importance, feature_set), 
+           y = mean_importance)) +
+  geom_col(fill = "steelblue") +
+  geom_errorbar(aes(ymin = mean_importance - sd_importance, 
+                    ymax = mean_importance + sd_importance),
+                width = 0.3, linewidth = 0.5) +
+  coord_flip() +
+  scale_x_reordered() +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +  # Anchor at zero
+  facet_wrap(~ feature_set, scales = "free",) +
+  labs(
+    x = "Feature",
+    y = "Mean Importance ± SD",
+    title = "Feature Importance by Feature Set"
+  ) +
+  theme_bw()
+
+ggsave(filename="~/Documents/GitHub/AD_longitudinal/outputs/260331/260331_ML_LN_model_gini_impurity_feature_importance.pdf", plot = feature_importance_plot, width = 18, height = 9)
+```
+
+
+```{r}
+feature_importance_df <- read.csv("~/Documents/GitHub/PreclinicalAD_GutMicrobiome-Inflammation/R/Data/ML/CS_feature_importances.csv") %>%
+  select(-any_of("X")) %>%
+  rename(
+    Education = Years_Education,
+    `APOE4 Carriage` = apoe4_carriage,
+    Calprotectin = log2_Calp,
+    `Guild Abundance` = guild_abundance,
+    `Bacteroides cellulosilyticus` = k__Bacteria.p__Bacteroidetes.c__Bacteroidia.o__Bacteroidales.f__Bacteroidaceae.g__Bacteroides.s__Bacteroides_cellulosilyticus_abundance,
+    `Roseburia sp CAG 471` = k__Bacteria.p__Firmicutes.c__Clostridia.o__Clostridiales.f__Lachnospiraceae.g__Roseburia.s__Roseburia_sp_CAG_471_abundance,
+    `Roseburia hominis` = k__Bacteria.p__Firmicutes.c__Clostridia.o__Clostridiales.f__Lachnospiraceae.g__Roseburia.s__Roseburia_hominis_abundance,
+    `Hippocampus volume` = mr_vol_r_hippocampus,
+    `Cortical Signature` = LOAD_CorticalSignature_Thickness,
+    `WMH volume` = mr_vol_tot_wmhypointensities,
+    `PET Amyloid` = combined.centiloid,
+    `CSF t-tau` = LUMIPULSE_CSF_tTau,
+    `CSF p-tau-181` = LUMIPULSE_CSF_pTau,
+    `PET tau` = Tauopathy
+  )
+
+# Convert wide format to long format
+feature_importance_long <- feature_importance_df %>%
+  filter(!grepl("brain", feature_set, ignore.case = TRUE)) %>%  # Remove brain feature sets
+  pivot_longer(
+    cols = -c(seed, feature_set),
+    names_to = "feature_name",
+    values_to = "importance"
+  ) %>%
+  filter(!is.na(importance))
+
+# Calculate mean and SD importance for each feature within each feature_set
+feature_importance_summary <- feature_importance_long %>%
+  group_by(feature_set, feature_name) %>%
+  summarise(
+    mean_importance = mean(importance),
+    sd_importance = sd(importance),
+    .groups = "drop"
+  )
+
+# Create the plot with tidytext
+feature_importance_plot <- ggplot(feature_importance_summary, 
+       aes(x = reorder_within(feature_name, mean_importance, feature_set), 
+           y = mean_importance)) +
+  geom_col(fill = "steelblue") +
+  geom_errorbar(aes(ymin = mean_importance - sd_importance, 
+                    ymax = mean_importance + sd_importance),
+                width = 0.3, linewidth = 0.5) +
+  coord_flip() +
+  scale_x_reordered() +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +  # Anchor at zero
+  facet_wrap(~ feature_set, scales = "free",) +
+  labs(
+    x = "Feature",
+    y = "Mean Importance ± SD",
+    title = "Feature Importance by Feature Set"
+  ) +
+  theme_bw()
+
+ggsave(filename="~/Documents/GitHub/AD_longitudinal/outputs/260331/260331_ML_CS_model_gini_impurity_feature_importance.pdf", plot = feature_importance_plot, width = 18, height = 9)
+```
+
+```{r}
+
+write.csv(tukey_AD, "~/Documents/GitHub/PreclinicalAD_GutMicrobiome-Inflammation/R/Data/ML/cross_sectional_ML_AD_anova.csv")
+write.csv(tukey_CG, "~/Documents/GitHub/PreclinicalAD_GutMicrobiome-Inflammation/R/Data/ML/cross_sectional_ML_CG_anova.csv")
+
+
+write.csv(tukey_AD_long, "~/Documents/GitHub/PreclinicalAD_GutMicrobiome-Inflammation/R/Data/ML/long_ML_AD_long_anova.csv")
+write.csv(tukey_CG_long, "~/Documents/GitHub/PreclinicalAD_GutMicrobiome-Inflammation/R/Data/ML/long_ML_CG_long_anova.csv")
+```
